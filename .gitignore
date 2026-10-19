@@ -234,3 +234,13 @@ robots/custom/trader/runtime/
 robots/custom/trader/config/trader.env
 robots/custom/trader/config/strategies.yaml
 *.swp
+
+# Project skill local task state
+.project-task.json
+.project-lifecycle.json
+.project-execution.json
+.project-execution/
+.project-task-*.json
+.project-lifecycle-*.json
+.project-execution-*.json
+.project-execution-*/
