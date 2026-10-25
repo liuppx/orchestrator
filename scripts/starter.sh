@@ -70,7 +70,7 @@ load_env() {
   export HUB_RUNTIME_DIR="${HUB_RUNTIME_DIR:-$ROOT_DIR/runtime/control-plane}"
   export HUB_INSTANCES_ROOT="${HUB_INSTANCES_ROOT:-$ROOT_DIR/runtime/instances}"
   export HUB_BIND_ADDR="${HUB_BIND_ADDR:-127.0.0.1:3900}"
-  export HUB_PYTHON_APP_DIR="${HUB_PYTHON_APP_DIR:-$ROOT_DIR/hub/backend}"
+  export HUB_PYTHON_APP_DIR="${HUB_PYTHON_APP_DIR:-$ROOT_DIR/backend}"
 
   if [[ "$has_repo_root" == "1" ]]; then
     export HUB_REPO_ROOT="$env_repo_root"
@@ -97,7 +97,7 @@ start_command_desc() {
   elif [[ -x "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub" ]]; then
     echo "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub"
   else
-    echo "[error] Python control plane not ready. Run scripts/bootstrap_full_stack.sh first." >&2
+    echo "[error] Python control plane not ready. Install dependencies with: (cd backend && uv sync)" >&2
     exit 1
   fi
 }

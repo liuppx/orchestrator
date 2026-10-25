@@ -1,4 +1,4 @@
-# Hub（Agent 控制面，生产入口）
+# Hub 控制面
 
 ## 1. 定位
 
@@ -12,16 +12,15 @@ Hub 是本仓库的唯一生产控制入口：
 ## 2. 目录
 
 ```text
-hub/
-  backend/
-    .env.template
-    pyproject.toml
-    src/hub/
-  frontend/
-    src/
-    package.json
-    dist/
-      index.html  # frontend build output
+backend/
+  .env.template
+  pyproject.toml
+  src/hub/
+frontend/
+  src/
+  package.json
+  dist/
+    index.html  # frontend build output
 agents/
   openclaw/
   nanobot/
@@ -29,93 +28,33 @@ agents/
 scripts/
   starter.sh
   package.sh
-  bootstrap_full_stack.sh
   doctor_full_stack.sh
   setup/openclaw_prepare.sh
 ```
 
-## 3. 启动（推荐）
+## 3. 生产部署
 
-```bash
-cd /home/administrator/code/hub
-bash scripts/bootstrap_full_stack.sh
-# 编辑 config/hub.env，填 ROUTER_API_KEY
-bash scripts/starter.sh start
-```
-
-访问：`http://127.0.0.1:3900/`
+配置、构建、启动、打包和健康检查命令统一见[生产部署与运维](operations.md)。默认访问地址为 `http://127.0.0.1:3900/`。
 
 前端约定：
 
-- `hub/frontend/` 是 React 源码目录
-- `hub/frontend/dist/` 是前端构建产物目录，由 `npm run build` 输出
-- Python backend 统一托管 `hub/frontend/dist/`，并负责 SPA 路由回退
-- `hub/frontend/dist/` 不作为源码提交对象；仓库只提交 `hub/frontend/src/` 与构建配置，部署或打包阶段再生成构建产物
+- `frontend/` 是 React 源码目录
+- `frontend/dist/` 是前端构建产物目录，由 `npm run build` 输出
+- Python backend 统一托管 `frontend/dist/`，并负责 SPA 路由回退
+- `frontend/dist/` 不作为源码提交对象；仓库只提交 `frontend/src/` 与构建配置，部署或打包阶段再生成构建产物
 
 认证相关配置建议：
 
 - `HUB_PUBLIC_BASE_URL`：线上填写控制台真实 HTTPS 地址，Hub 会把它写入钱包签名 challenge 的 `domain` / `uri`
 - `HUB_SESSION_COOKIE_SECURE_MODE`：`auto` / `always` / `never`，默认 `auto`
 
-## 4. 停止与重启
+## 4. 生命周期运维
 
-```bash
-bash scripts/starter.sh stop
-bash scripts/starter.sh restart
-```
+生产启停和检查命令见[生产部署与运维](operations.md)。
 
 ## 5. 本地开发
 
-开发阶段建议前后端分进程启动：
-
-本地 backend 配置文件：
-
-```bash
-cp hub/backend/.env.template hub/backend/.env
-```
-
-`.env` 只用于本地开发，不提交到远端。
-
-启动 backend：
-
-```bash
-cd hub/backend
-uv run python -m uvicorn hub.app:create_app --factory --reload --host 127.0.0.1 --port 3900
-```
-
-启动 frontend：
-
-```bash
-cd hub/frontend
-npm install
-npm run dev
-```
-
-前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:3900`。
-
-停止开发服务：
-
-- 正常停止：在 backend 和 frontend 各自终端里按 `Ctrl+C`
-- 如果端口被旧进程占用，可手动清理：
-
-```bash
-lsof -tiTCP:3900 -sTCP:LISTEN | xargs kill
-lsof -tiTCP:5174 -sTCP:LISTEN | xargs kill
-```
-
-打包或部署后的生命周期操作统一使用 `scripts/starter.sh`。
-
-测试命令：
-
-```bash
-cd hub/backend
-uv run python -m unittest discover -s tests
-```
-
-```bash
-cd hub/frontend
-npm run build
-```
+本地前后端开发命令见仓库根目录 [README](../README.md)。
 
 ## 6. 核心接口分层
 
@@ -176,7 +115,7 @@ curl -sS http://127.0.0.1:3900/api/v1/public/health
 
 ```bash
 bash scripts/doctor_full_stack.sh
-# 检查 config/hub.env 或 hub/backend/.env 中 ROUTER_API_KEY
+# 检查 config/hub.env 或 backend/.env 中 ROUTER_API_KEY
 ```
 
 ### Q3: WhatsApp 配对后不回消息

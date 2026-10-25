@@ -1,7 +1,7 @@
 # Hub 控制平面详细设计文档
 
 > 版本：2026-03-18  
-> 仓库：`/home/administrator/code/hub`  
+> 仓库：`/home/administrator/code/orchestrator`
 > 重点对象：Python `control-plane`（Agent 控制面）+ OpenClaw 多实例编排
 
 ## 1. 战报结论（先看这 90 秒）
@@ -42,7 +42,7 @@ Hub 当前已经形成一套可运行的“智能体控制平面”：
 ```mermaid
 flowchart LR
     U[Browser / Wallet] -->|HTTP + Cookie| CP[Python Control Plane]
-    CP -->|Serve Static| WEB[hub/frontend/dist/index.html]
+    CP -->|Serve Static| WEB[frontend/dist/index.html]
     CP -->|spawn / config| OC1[OpenClaw Gateway #1]
     CP -->|spawn / config| OC2[OpenClaw Gateway #2]
     CP -->|spawn / config| OCN[OpenClaw Gateway #N]
@@ -62,8 +62,8 @@ flowchart LR
 
 ### 3.1 分层说明
 
-1. **交互层**：`hub/frontend/` React 前端，构建后由 `hub/frontend/dist/index.html` 提供页面交互与轮询。
-2. **控制层**：`hub/backend/src/hub/`，负责 API、编排、状态机、自愈。
+1. **交互层**：`frontend/` React 前端，构建后由 `frontend/dist/index.html` 提供页面交互与轮询。
+2. **控制层**：`backend/src/hub/`，负责 API、编排、状态机、自愈。
 3. **执行层**：`openclaw --profile hub-xxx ...`，真正跑 channel 与 agent。
 4. **外部依赖层**：Router API、WhatsApp/DingTalk 网络、钱包扩展。
 
@@ -72,31 +72,29 @@ flowchart LR
 ## 4. 仓库关键目录（控制平面视角）
 
 ```text
-hub/
-├─ hub/
-│  ├─ backend/
-│  │  ├─ src/hub/                  # Python 控制面
-│  │  ├─ .env.template             # 本地开发环境模板
-│  │  ├─ pyproject.toml
-│  │  └─ uv.lock
-│  └─ frontend/
-│     ├─ src/                      # React 源码
-│     ├─ package.json
-│     └─ dist/                     # 前端构建产物（运行时/打包时生成）
-├─ agents/                         # 智能体定义与运行约定
-├─ runtime/
-│  ├─ control-plane/state.json     # 实例状态持久化文件
-│  ├─ control-plane/logs/          # 控制平面日志
-│  └─ instances/<id>/              # 每个实例的独立目录
-│     ├─ config/
-│     ├─ state/
-│     ├─ workspace/                # AGENTS/SOUL/USER 模板
-│     └─ logs/                     # gateway.log / pair.log / events.jsonl
-├─ scripts/
-│  ├─ starter.sh                   # 标准启动/停止/重启
-│  └─ package.sh                   # 标准打包（含 tag 规则）
-└─ docs/
-   └─ hub-control-plane-detailed-design.md
+backend/
+├─ src/hub/                        # Python 控制面
+├─ .env.template                   # 本地开发环境模板
+├─ pyproject.toml
+└─ uv.lock
+frontend/
+├─ src/                            # React 源码
+├─ package.json
+└─ dist/                           # 前端构建产物（运行时/打包时生成）
+agents/                            # 智能体定义与运行约定
+runtime/                           # 忽略的运行状态、日志与实例目录
+├─ control-plane/state.json        # 实例状态持久化文件
+├─ control-plane/logs/             # 控制平面日志
+└─ instances/<id>/                 # 每个实例的独立目录
+   ├─ config/
+   ├─ state/
+   ├─ workspace/                  # 每个实例初始化时生成的工作区文件
+   └─ logs/                        # gateway.log / pair.log / events.jsonl
+scripts/
+├─ starter.sh                      # 标准启动/停止/重启
+└─ package.sh                      # 标准打包（含 tag 规则）
+docs/
+└─ hub-control-plane-detailed-design.md
 ```
 
 ---
@@ -310,7 +308,7 @@ flowchart TD
 
 ## 10. 前端交互设计（单页控制台）
 
-前端当前是一个 React SPA，源码位于 `hub/frontend/`，构建产物位于 `hub/frontend/dist/`。
+前端当前是一个 React SPA，源码位于 `frontend/`，构建产物位于 `frontend/dist/`。
 
 ### 10.1 关键行为
 
@@ -398,7 +396,7 @@ flowchart TD
 
 - 默认 `start`。
 - 打包后的服务运行读取 `config/hub.env`。
-- 本地 backend 开发读取 `hub/backend/.env`。
+- 本地 backend 开发读取 `backend/.env`。
 - 管理 PID、日志、端口冲突检测。
 
 ### 14.2 打包脚本
@@ -413,8 +411,8 @@ flowchart TD
 ### 14.3 打包内容
 
 ```text
-hub/backend/
-hub/frontend/
+backend/
+frontend/
 agents/
 config/hub.env.template
 scripts/

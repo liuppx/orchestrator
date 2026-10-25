@@ -39,7 +39,7 @@ class PublicAuthApiTest(unittest.TestCase):
 
     def start_server(self, secure_mode: str, repo_root: Path | None = None) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.repo_root = repo_root or Path.cwd().parent.parent
+        self.repo_root = repo_root or Path(__file__).resolve().parents[2]
         self.port = _free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         env_values = {

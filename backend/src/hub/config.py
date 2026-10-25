@@ -8,9 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def guess_repo_root() -> Path:
     current = Path.cwd()
-    if current.name == "backend" and current.parent.name == "hub":
-        return current.parent.parent
-    if current.name == "hub":
+    if current.name == "backend":
         return current.parent
     return current
 
@@ -49,7 +47,7 @@ class Settings(BaseSettings):
 
     @property
     def ui_dir(self) -> Path:
-        return self.repo_root / "hub" / "frontend" / "dist"
+        return self.repo_root / "frontend" / "dist"
 
     @property
     def parsed_model_allowlist(self) -> list[str]:

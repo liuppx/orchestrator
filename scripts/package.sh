@@ -15,8 +15,8 @@ agents_src=""
 config_src=""
 starter_src=""
 
-backend_rel="hub/backend"
-frontend_rel="hub/frontend"
+backend_rel="backend"
+frontend_rel="frontend"
 agents_rel="agents"
 config_rel="config"
 scripts_rel="scripts"
@@ -233,13 +233,19 @@ mkdir -p "$out_dir"
 echo "Cleaning output directory: $out_dir"
 find "$out_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 rm -rf "$stage_dir"
-mkdir -p "$stage_dir/hub"
+mkdir -p "$stage_dir"
 
-cp -R "$backend_src" "$stage_dir/hub/"
-cp -R "$frontend_src" "$stage_dir/hub/"
+cp -R "$backend_src" "$stage_dir/"
+cp -R "$frontend_src" "$stage_dir/"
 cp -R "$agents_src" "$stage_dir/"
 cp -R "$config_src" "$stage_dir/"
 cp -R "$source_dir/$scripts_rel" "$stage_dir/"
+
+runtime_dir_in_package="$(find "$stage_dir" -type d -name runtime -print -quit)"
+if [[ -n "$runtime_dir_in_package" ]]; then
+  echo "Refusing to package runtime data: $runtime_dir_in_package" >&2
+  exit 1
+fi
 
 printf '%s\n' "$target_tag" > "$stage_dir/VERSION"
 printf '%s\n' "$build_hash_full" > "$stage_dir/COMMIT"

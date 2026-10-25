@@ -214,8 +214,8 @@ config/hub.env
 .openclaw/
 *.bak.*
 ops/reports/
+# Runtime state, per-instance data, credentials, and logs are never source files.
 runtime/
-workspace/ecom/.openclaw/
 ops/army/army.env
 
 output/

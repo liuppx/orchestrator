@@ -16,7 +16,7 @@
 3. 钉钉实例创建与配置
 4. 实例模型配置与基础运行状态管理
 
-这些能力当前主要由 `hub/` 提供控制面与运行编排，尚未完全收口到 `agents/custom/messenger/` 目录中。
+这些能力当前主要由仓库根目录的 `backend/` 控制面与 `frontend/` 控制台提供，尚未完全收口到 `agents/custom/messenger/` 目录中。
 
 ## 目录结构
 
@@ -31,8 +31,8 @@ agents/custom/messenger/
 
 目前相关实现主要分布在：
 
-- `hub/backend/src/hub/`
-- `hub/frontend/dist/index.html`
+- `backend/src/hub/`
+- `frontend/dist/index.html`
 
 本目录当前承接的是智能体语义、配置约定和运维说明，不直接替代 hub 的现有实现。
 

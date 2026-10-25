@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT_DIR/config/hub.env"
-APP_ENV_FILE="$ROOT_DIR/hub/backend/.env"
+APP_ENV_FILE="$ROOT_DIR/backend/.env"
 
 echo "[doctor] repo=$ROOT_DIR"
 
@@ -21,10 +21,10 @@ else
   echo "[warn] uv missing"
 fi
 
-if [[ -x "$ROOT_DIR/hub/backend/.venv/bin/agent-hub" ]]; then
+if [[ -x "$ROOT_DIR/backend/.venv/bin/agent-hub" ]]; then
   echo "[ok] python hub executable ready"
 else
-  echo "[warn] python hub executable missing; run scripts/bootstrap_full_stack.sh"
+  echo "[warn] python hub executable missing; run: (cd backend && uv sync)"
 fi
 
 if command -v openclaw >/dev/null 2>&1; then
@@ -60,5 +60,4 @@ else
   echo "[warn] env file missing: $ENV_FILE"
 fi
 
-echo "[next] bootstrap: bash $ROOT_DIR/scripts/bootstrap_full_stack.sh"
 echo "[next] run:       bash $ROOT_DIR/scripts/starter.sh start"
