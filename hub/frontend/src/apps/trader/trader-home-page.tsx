@@ -5,10 +5,10 @@ import { useMemo } from 'react'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Panel } from '../../components/ui/panel'
-import { useRobotAction } from '../../platform/robots/mutations'
-import { useRobotWorkspaceSummary } from '../../platform/robots/queries'
+import { useAgentAction } from '../../platform/agents/mutations'
+import { useAgentWorkspaceSummary } from '../../platform/agents/queries'
 import { cn } from '../../platform/core/utils'
-import { buildStrategyOptions, buildStrategySnapshots, formatBrowserDateTime } from './trader-helpers'
+import { buildRunBatches, buildStrategyOptions, buildStrategySnapshots, formatBrowserDateTime } from './trader-helpers'
 
 function CompactFieldList({
   items,
@@ -31,23 +31,24 @@ function CompactFieldList({
 }
 
 export function TraderHomePage() {
-  const { data, isFetching, refetch } = useRobotWorkspaceSummary('trader')
-  const runOnce = useRobotAction('trader', 'run-once')
-  const start = useRobotAction('trader', 'start')
-  const stop = useRobotAction('trader', 'stop')
+  const { data, isFetching, refetch } = useAgentWorkspaceSummary('trader')
+  const runOnce = useAgentAction('trader', 'run-once')
+  const start = useAgentAction('trader', 'start')
+  const stop = useAgentAction('trader', 'stop')
   const strategySnapshots = useMemo(() => buildStrategySnapshots(data), [data])
   const strategyOptions = useMemo(() => buildStrategyOptions(data, strategySnapshots), [data, strategySnapshots])
+  const runBatches = useMemo(() => buildRunBatches(data), [data])
 
   const actionError = runOnce.error?.message || start.error?.message || stop.error?.message
 
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white px-6 py-5">
-        <div className="text-sm text-slate-500">机器人 / 交易员</div>
+        <div className="text-sm text-slate-500">智能体 / 交易员</div>
         <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold text-slate-950">交易员</h1>
-            <p className="mt-1 text-sm text-slate-500">先看机器人整体状态，再从策略列表进入具体策略。</p>
+            <p className="mt-1 text-sm text-slate-500">先看智能体整体状态，再从策略列表进入具体策略。</p>
           </div>
           <div className="flex flex-wrap gap-3">
             <Button onClick={() => runOnce.mutate()} disabled={runOnce.isPending}>
@@ -70,7 +71,7 @@ export function TraderHomePage() {
         </div>
       </div>
 
-      <Panel title="运行概览" description="用一行紧凑状态看清机器人当前状态，不再使用大卡片平铺。">
+      <Panel title="运行概览" description="用一行紧凑状态看清智能体当前状态，不再使用大卡片平铺。">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <CompactFieldList
             items={[
@@ -88,6 +89,39 @@ export function TraderHomePage() {
             ]}
           />
         </div>
+      </Panel>
+
+      <Panel title="最近运行批次" description="按 run_id 查看最近 run_once 的策略、信号和订单计划产物。">
+        {runBatches.length ? (
+          <div className="overflow-hidden rounded-lg border border-slate-200">
+            <div className="hidden grid-cols-[minmax(0,1.25fr)_176px_72px_72px_88px_72px_72px] gap-4 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500 lg:grid">
+              <div>Run ID</div>
+              <div>完成时间</div>
+              <div>策略</div>
+              <div>信号</div>
+              <div>订单计划</div>
+              <div>抑制</div>
+              <div>错误</div>
+            </div>
+            <div className="divide-y divide-slate-200">
+              {runBatches.map((run) => (
+                <div key={run.runId} className="grid gap-3 px-4 py-3 text-sm lg:grid-cols-[minmax(0,1.25fr)_176px_72px_72px_88px_72px_72px] lg:items-center lg:gap-4">
+                  <div className="min-w-0 break-all font-medium text-slate-900">{run.runId}</div>
+                  <div className="text-slate-600">{formatBrowserDateTime(run.finishedAt ?? run.startedAt)}</div>
+                  <div className="text-slate-900">{run.strategyCount}</div>
+                  <div className="text-slate-900">{run.signalCount}</div>
+                  <div className="text-slate-900">{run.orderPlanCount}</div>
+                  <div className={run.suppressedOrderCount ? 'font-medium text-amber-700' : 'text-slate-900'}>{run.suppressedOrderCount}</div>
+                  <div className={run.errorCount ? 'font-medium text-rose-700' : 'text-slate-900'}>{run.errorCount}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+            还没有运行批次。执行一次 Trader 后会生成 runtime/runs/&lt;run_id&gt;/summary.json。
+          </div>
+        )}
       </Panel>
 
       <Panel title="策略列表" description="选择策略进入详情页，再看状态、记录和配置。">
@@ -121,7 +155,7 @@ export function TraderHomePage() {
                     <div className="text-sm text-slate-900">{strategy.positionQuantity}</div>
                     <div>
                       <Link
-                        to="/robots/trader/$strategyId"
+                        to="/agents/trader/$strategyId"
                         params={{ strategyId: strategy.id }}
                         className="text-sm font-medium text-sky-700 hover:text-sky-800"
                       >

@@ -1,8 +1,8 @@
-# OpenClaw WhatsApp 群聊机器人实战手册（从 0 到可用）
+# OpenClaw WhatsApp 群聊智能体实战手册（从 0 到可用）
 
 > 教师 + 指挥官视角：不只告诉你“怎么做”，更告诉你“为什么这样做”。
 > 
-> 目标：在 **Windows（国内网络）+ WSL + OpenClaw** 环境下，让机器人稳定加入 WhatsApp 群并可对话，模型走公司 Router 的 `gpt-5.3-codex`。
+> 目标：在 **Windows（国内网络）+ WSL + OpenClaw** 环境下，让智能体稳定加入 WhatsApp 群并可对话，模型走公司 Router 的 `gpt-5.3-codex`。
 
 ---
 
@@ -484,7 +484,7 @@ openclaw gateway --token <gateway_token> health
 
 ```mermaid
 flowchart TD
-    A[机器人不回复] --> B{channels status}
+    A[智能体不回复] --> B{channels status}
     B -->|not linked| C[重新 login 扫码]
     B -->|linked 但 disconnected| D[查 gateway 进程和日志]
     B -->|running connected| E{模型调用是否成功}

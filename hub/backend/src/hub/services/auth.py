@@ -132,7 +132,7 @@ class AuthSessionService:
                 f"{host} wants you to sign in with your Ethereum account:",
                 wallet_id,
                 "",
-                "Sign in to Robot Hub.",
+                "Sign in to Agent Hub.",
                 "",
                 f"URI: {base_url}",
                 "Version: 1",

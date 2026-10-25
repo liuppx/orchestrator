@@ -1,7 +1,7 @@
 [project]
-name = "robot-hub"
+name = "agent-hub"
 version = "0.1.0"
-description = "Python control plane for the robot hub"
+description = "Python control plane for the agent hub"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-robot-hub = "hub.app:main"
+agent-hub = "hub.app:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

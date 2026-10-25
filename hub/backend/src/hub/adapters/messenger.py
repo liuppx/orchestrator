@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any
 
 from hub.models import (
-    RobotWorkspaceActionResponse,
-    RobotWorkspaceConfigUpdateResponse,
-    RobotWorkspaceSummaryResponse,
+    AgentWorkspaceActionResponse,
+    AgentWorkspaceConfigUpdateResponse,
+    AgentWorkspaceSummaryResponse,
 )
 from hub.services.messenger import MessengerRuntimeConfig, MessengerStateService
 
@@ -48,9 +48,9 @@ class MessengerWorkspaceAdapter:
             )
         )
 
-    def summary(self) -> RobotWorkspaceSummaryResponse:
+    def summary(self) -> AgentWorkspaceSummaryResponse:
         if not self.exists():
-            return RobotWorkspaceSummaryResponse(
+            return AgentWorkspaceSummaryResponse(
                 available=False,
                 broker="unavailable",
                 running=False,
@@ -75,7 +75,7 @@ class MessengerWorkspaceAdapter:
             "runningCount": running_count,
             "items": items,
         }
-        return RobotWorkspaceSummaryResponse(
+        return AgentWorkspaceSummaryResponse(
             available=True,
             broker="multi-channel",
             running=running_count > 0,
@@ -91,11 +91,11 @@ class MessengerWorkspaceAdapter:
             service_log_tail="",
         )
 
-    def update_config(self, broker: str, strategy: dict[str, Any]) -> RobotWorkspaceConfigUpdateResponse:
+    def update_config(self, broker: str, strategy: dict[str, Any]) -> AgentWorkspaceConfigUpdateResponse:
         _ = broker
         _ = strategy
         raise NotImplementedError("messenger workspace does not support config updates")
 
-    def run_action(self, action: str) -> RobotWorkspaceActionResponse:
+    def run_action(self, action: str) -> AgentWorkspaceActionResponse:
         _ = action
         raise NotImplementedError("messenger workspace does not support direct actions")

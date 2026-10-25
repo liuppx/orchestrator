@@ -30,7 +30,7 @@ prompt_file="${ARMY_STATE_DIR}/advisor_prompt_${ts}.txt"
 run_log="${ADVISOR_DIR}/advisor-run-${ts}.log"
 
 cat > "${prompt_file}" <<PROMPT
-你是“跨境电商 WhatsApp 机器人”运维与产品联席指挥官。
+你是“跨境电商 WhatsApp 智能体”运维与产品联席指挥官。
 请基于以下运行报告给出改进建议，不要执行任何命令，不要修改任何文件：
 报告路径：${latest_report}
 

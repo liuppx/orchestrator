@@ -1,6 +1,7 @@
 import { api } from '../core/api'
-import type { AuthChallenge, AuthSession, PlatformSession } from '../core/types'
-import { connectWallet, requestOptionalUcan, saveWalletHistory, signWalletMessage } from './web3'
+import type { AuthSession, PlatformSession } from '../core/types'
+import { connectWallet, saveWalletHistory } from './web3'
+import { loginWithWalletIdentity } from '@yeying-community/web3-bs'
 
 export type PlatformAuthProvider = {
   id: 'cookie-wallet' | 'ucan'
@@ -15,36 +16,12 @@ async function fetchCookieWalletSession(): Promise<AuthSession> {
 }
 
 async function loginWithCookieWallet(): Promise<AuthSession> {
-  const { wallet, chainId, provider } = await connectWallet()
-
-  const challenge = await api<AuthChallenge>('/api/v1/public/auth/wallet/challenge', {
-    method: 'POST',
-    body: JSON.stringify({
-      wallet_id: wallet,
-      chain_id: chainId,
-    }),
-  })
-
-  const signature = await signWalletMessage({
-    provider,
-    wallet,
-    message: challenge.challenge,
-  })
-
-  const { ucanSession, ucanSignature } = await requestOptionalUcan({ provider })
-
-  const session = await api<AuthSession>('/api/v1/public/auth/wallet/verify', {
-    method: 'POST',
-    body: JSON.stringify({
-      wallet_id: wallet,
-      chain_id: chainId,
-      challenge: challenge.challenge,
-      challenge_token: challenge.challenge_token,
-      signature,
-      ucan_session: ucanSession,
-      ucan_signature: ucanSignature,
-    }),
-  })
+  const { provider } = await connectWallet()
+  const result = await loginWithWalletIdentity({ provider, baseUrl: '/api/v1/public/auth', storeToken: false })
+  const response = result.response as AuthSession
+  const wallet = result.walletAddress || response.wallet_id
+  if (!wallet) throw new Error('钱包身份未返回钱包账户')
+  const session = response
 
   saveWalletHistory(wallet)
   return session

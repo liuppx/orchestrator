@@ -1,11 +1,11 @@
 from .auth import AuthSessionService, SESSION_COOKIE_NAME, auth_service
 from .messenger import MessengerStateService
-from .robots import RobotRegistry
+from .agents import AgentRegistry
 
 __all__ = [
     "AuthSessionService",
     "MessengerStateService",
-    "RobotRegistry",
+    "AgentRegistry",
     "SESSION_COOKIE_NAME",
     "auth_service",
 ]

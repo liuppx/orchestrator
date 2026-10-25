@@ -1,4 +1,4 @@
-# Hub（Robot 控制面，生产入口）
+# Hub（Agent 控制面，生产入口）
 
 ## 1. 定位
 
@@ -22,7 +22,7 @@ hub/
     package.json
     dist/
       index.html  # frontend build output
-robots/
+agents/
   openclaw/
   nanobot/
   custom/
@@ -126,31 +126,42 @@ npm run build
 - `POST /api/v1/public/auth/wallet/challenge`
 - `POST /api/v1/public/auth/wallet/verify`
 - `POST /api/v1/public/auth/logout`
-- `GET /api/v1/public/robot/types`
-- `GET /api/v1/public/robots`
+- `GET /api/v1/public/agent/types`
+- `GET /api/v1/public/agents`
 - `GET /api/v1/public/router/models`
-- `GET /api/v1/public/robots/{key}/summary`
-- `GET /api/v1/public/robots/{key}/config`
-- `PUT /api/v1/public/robots/{key}/config`
-- `POST /api/v1/public/robots/{key}/actions/run-once`
-- `POST /api/v1/public/robots/{key}/actions/start`
-- `POST /api/v1/public/robots/{key}/actions/stop`
-- `GET /api/v1/public/robot/instances`
-- `POST /api/v1/public/robot/instances`
-- `GET /api/v1/public/robot/instances/{id}`
-- `DELETE /api/v1/public/robot/instances/{id}`
-- `PATCH /api/v1/public/robot/instances/{id}/model`
-- `POST /api/v1/public/robot/instances/{id}/start`
-- `POST /api/v1/public/robot/instances/{id}/stop`
-- `POST /api/v1/public/robot/instances/{id}/pair-whatsapp`
-- `GET /api/v1/public/robot/instances/{id}/logs`
-- `GET /api/v1/public/robot/instances/{id}/diagnose`
+- `GET /api/v1/public/agents/{key}/summary`
+- `GET /api/v1/public/agents/{key}/config`
+- `PUT /api/v1/public/agents/{key}/config`
+- `POST /api/v1/public/agents/{key}/actions/run-once`
+- `POST /api/v1/public/agents/{key}/actions/start`
+- `POST /api/v1/public/agents/{key}/actions/stop`
+- `GET /api/v1/public/agent/instances`
+- `POST /api/v1/public/agent/instances`
+- `GET /api/v1/public/agent/instances/{id}`
+- `DELETE /api/v1/public/agent/instances/{id}`
+- `PATCH /api/v1/public/agent/instances/{id}/model`
+- `POST /api/v1/public/agent/instances/{id}/start`
+- `POST /api/v1/public/agent/instances/{id}/stop`
+- `POST /api/v1/public/agent/instances/{id}/pair-whatsapp`
+- `GET /api/v1/public/agent/instances/{id}/logs`
+- `GET /api/v1/public/agent/instances/{id}/diagnose`
 
 ### admin
 - 预留，当前默认控制面未开放生产 admin 路由
 
 ### internal
-- 预留，当前默认控制面未开放 production internal 路由
+- `GET /api/v1/internal/installed`
+- `POST /api/v1/internal/install`
+- `POST /api/v1/internal/upgrade`
+- `POST /api/v1/internal/uninstall`
+- `POST /api/v1/internal/hooks/{action}`
+- `GET /api/v1/internal/project/agents`
+- `POST /api/v1/internal/project/agents/install`
+- `POST /api/v1/internal/project/agents/upgrade`
+- `POST /api/v1/internal/project/agents/uninstall`
+- `POST /api/v1/internal/project/hooks/{action}`
+
+Internal 路由使用 `Authorization: Bearer $HUB_INTERNAL_TOKEN`，同时保留 `Token` 头兼容旧 Project AppStore 代理。
 
 ## 7. 常见问题
 

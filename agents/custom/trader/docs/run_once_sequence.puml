@@ -1,0 +1,117 @@
+@startuml
+title Trader run_once 当前时序图
+
+skinparam shadowing false
+skinparam sequence {
+  ArrowThickness 1
+  LifeLineBorderColor #94a3b8
+  LifeLineBackgroundColor #f8fafc
+  ParticipantBorderColor #94a3b8
+  ParticipantBackgroundColor #ffffff
+  ParticipantFontColor #0f172a
+  ActorBorderColor #94a3b8
+  ActorBackgroundColor #ffffff
+  ActorFontColor #0f172a
+  BoxBorderColor #cbd5e1
+}
+
+actor User as 用户
+participant "Hub Frontend\nTrader 页面" as Frontend
+participant "Hub Backend\npublic API" as HubApi
+participant "TraderAdapter" as Adapter
+participant "run_once.sh" as Script
+participant "trader-bot CLI\nsrc/main.py" as Cli
+participant "run_cycle\nexecution/runner.py" as Runner
+participant "IfindClient" as Ifind
+participant "Strategy\nbreakout / auction_wave" as Strategy
+participant "Risk Rules" as Risk
+participant "Broker\npaper / eastmoney_stub" as Broker
+database "runtime/\nstate.json\nsignals.jsonl\norders.jsonl\nsnapshots/\nlogs/service.log" as Runtime
+
+用户 -> Frontend : 点击“执行一次”
+Frontend -> HubApi : POST /api/v1/public/agents/trader/actions/run-once
+HubApi -> HubApi : require_session(request)
+HubApi -> Adapter : run_action("run_once")
+
+Adapter -> Script : subprocess.run("scripts/run_once.sh")\n同步等待
+activate Script
+Script -> Cli : uv run trader-bot run-once --env-file config/trader.env
+activate Cli
+
+Cli -> Cli : load_app_config()\nload_strategy_config()
+Cli -> Runtime : 创建/追加 logs/service.log
+Cli -> Runner : run_cycle(strategies, ifind_client,\nbroker, runtime_dir, state_store, logger)
+activate Runner
+
+Runner -> Runtime : 读取 state.json
+
+loop 对每个 enabled 策略执行一轮
+  Runner -> Ifind : query_realtime_quotes(symbol)
+  Ifind --> Runner : realtime_payload
+
+  Runner -> Ifind : query_history_quotes(symbol, startdate, enddate)
+  Ifind --> Runner : history_payload
+
+  note right of Runner
+    当前实现下：
+    每个启用策略默认发起 2 次同花顺请求
+    1 次实时行情
+    1 次历史行情
+  end note
+
+  Runner -> Runtime : 追加 snapshots/<date>/<strategy>__<symbol>.jsonl
+  Runner -> Strategy : evaluate(snapshot, previous_state)
+  Strategy --> Runner : signal(action, reason, metadata)
+  Runner -> Risk : evaluate_risk(strategy_config,\nsignal.action, signal.target_quantity)
+  Risk --> Runner : risk_ok, risk_reason
+  Runner -> Runtime : 追加 signals.jsonl
+
+  alt 生成了订单意图且风控通过
+    Runner -> Broker : dry_run_order(intent)
+    Broker --> Runner : dry_run_result
+
+    alt intent.dry_run = true
+      Runner -> Runner : 仅记录 dry_run 结果
+    else intent.dry_run = false
+      Runner -> Broker : place_order(intent)
+      Broker --> Runner : paper 成交 or stub 结果
+    end
+
+    Runner -> Runtime : 追加 orders.jsonl
+  else 没有订单意图或风控未通过
+    Runner -> Runner : 仅记录 signal 和状态
+  end
+
+  Runner -> Runtime : 更新内存状态\nlastAction / lastReason /\nriskOk / strategyState / snapshotPath
+end
+
+Runner -> Runtime : 保存 state.json
+Runner -> Runtime : 追加 service.log\ncycle result=...
+Runner --> Cli : result
+deactivate Runner
+
+Cli --> Script : 进程退出 0
+deactivate Cli
+Script --> Adapter : stdout / stderr
+deactivate Script
+
+Adapter --> HubApi : AgentWorkspaceActionResponse
+HubApi --> Frontend : 200 OK
+
+Frontend -> Frontend : invalidateQueries(\nagent-workspace: trader,\nagents)
+Frontend -> HubApi : 重新拉取 Trader 工作台摘要
+HubApi -> Adapter : summary()
+Adapter -> Runtime : 读取 state.json / signals.jsonl /\norders.jsonl / service.log
+Adapter --> HubApi : AgentWorkspaceSummaryResponse
+HubApi --> Frontend : 最新状态摘要
+Frontend --> 用户 : 刷新页面状态、记录和时间
+
+note bottom
+  关键事实：
+  1. run_once 是同步执行，不是后台异步队列
+  2. 当前会处理所有 enabled 策略，不是只处理当前页面中的一个策略
+  3. 当前 broker 仅 paper / eastmoney_stub，不会真实发出东方财富实盘订单
+  4. Hub 页面展示的数据，本质上来自 runtime 目录和 service.log 的再读取
+end note
+
+@enduml

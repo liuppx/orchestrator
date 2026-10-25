@@ -1,6 +1,6 @@
-# GitHub Issue 机器人实现交接
+# GitHub Issue 智能体实现交接
 
-> 说明：当前 canonical 应用目录已经迁到 `robots/openclaw/issuer/`，旧的 `example/example_feishuGitIssue/` 运行目录也已经移除。本文下面大量代码定位仍引用旧路径，只能作为历史交接索引，不能再当成现行文件定位使用。
+> 说明：当前 canonical 应用目录已经迁到 `agents/openclaw/issuer/`，旧的 `example/example_feishuGitIssue/` 运行目录也已经移除。本文下面大量代码定位仍引用旧路径，只能作为历史交接索引，不能再当成现行文件定位使用。
 
 ## 一图总览
 
@@ -16,10 +16,10 @@ sequenceDiagram
     participant GitHub as GitHub 服务<br/>Issue REST API（创建/关闭/评论）
 
     rect rgb(245, 250, 255)
-        note over User,GitHub: 链路一：飞书 @机器人 创建 GitHub Issue（创建前确认）
+        note over User,GitHub: 链路一：飞书 @智能体 创建 GitHub Issue（创建前确认）
         note over User,GitHub: 代码定位：start_gitissue_gpt54.sh + openclaw.example.json:52
 
-        User->>FeishuBot: @机器人 仓库别名 + Issue 需求
+        User->>FeishuBot: @智能体 仓库别名 + Issue 需求
         FeishuBot->>OpenClaw: OpenClaw gateway 自动转发飞书消息<br/>start_gitissue_gpt54.sh:88
 
         OpenClaw->>OpenClaw: Skill 驱动模型解析<br/>config/policy.example.json:23 仓库别名<br/>SKILL.md:24 解析为 owner/repo + 生成草案
@@ -32,14 +32,14 @@ sequenceDiagram
             FeishuBot-->>User: 群内展示 Issue 草案<br/>提示：/confirm 确认创建
 
             loop 用户反复补充/修改需求（直到满意）
-                User->>FeishuBot: @机器人 修改需求内容
+                User->>FeishuBot: @智能体 修改需求内容
                 FeishuBot->>OpenClaw: 推送上下文消息
                 OpenClaw->>OpenClaw: 更新 Issue 计划<br/>覆盖同会话 pending JSON 文件<br/>pending_action.mjs:94
                 OpenClaw-->>FeishuBot: 返回新版 Issue 草案
                 FeishuBot-->>User: 展示新版创建计划
             end
 
-            User->>FeishuBot: @机器人 /confirm（/submit /cancel）
+            User->>FeishuBot: @智能体 /confirm（/submit /cancel）
             FeishuBot->>OpenClaw: 推送确认指令
             OpenClaw->>OpenClaw: confirmation-bridge 钩子拦截<br/>handler.ts:115 识别确认命令
             OpenClaw->>OpenClaw: 权限校验：仅发起人/管理员可确认<br/>handler.ts:76 + policy.example.json:2
@@ -60,7 +60,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 245)
         note over User,GitHub: 链路二：直接评论已有 Issue；关闭 Issue 见本文“源码与图的偏差说明”
-        User->>FeishuBot: @机器人 /run 评论已有 Issue
+        User->>FeishuBot: @智能体 /run 评论已有 Issue
         FeishuBot->>OpenClaw: 推送指令
         OpenClaw->>GhappLib: 获取 GitHub Token
         GhappLib->>GitHubAppAPI: 申请 Installation Token
@@ -74,7 +74,7 @@ sequenceDiagram
 
 ## 先给接手人一个总判断
 
-第一优先要理解的，不是飞书接入本身，而是“创建 Issue 这条确认链路”到底靠什么成立。当前实现的核心不是 `gh auth login`，也不是 GitHub webhook，而是下面 5 个增量能力叠在一起后，才把最基础的飞书 OpenClaw 变成了 GitHub Issue 机器人：
+第一优先要理解的，不是飞书接入本身，而是“创建 Issue 这条确认链路”到底靠什么成立。当前实现的核心不是 `gh auth login`，也不是 GitHub webhook，而是下面 5 个增量能力叠在一起后，才把最基础的飞书 OpenClaw 变成了 GitHub Issue 智能体：
 
 - 专用实例和专用 workspace
 - 本地 GitHub App 鉴权库
@@ -100,7 +100,7 @@ sequenceDiagram
 
 ### 1. 专用实例与专用 workspace
 
-这一步解决的是“它为什么不是一个通用聊天机器人，而是一个 GitHub Issue 专用机器人”。
+这一步解决的是“它为什么不是一个通用聊天智能体，而是一个 GitHub Issue 专用智能体”。
 
 源码位置：
 
@@ -114,11 +114,11 @@ sequenceDiagram
 
 - `openclaw.example.json` 把默认 workspace 固定到了 `example_feishuGitIssue/.openclaw-feishu-gitissue-gpt54/workspace-larkbot`。
 - `start_gitissue_gpt54.sh` 把实例目录、状态目录、日志、PID、端口、GitHub env 文件都固定到同一个示例目录下。
-- `scripts/sync_to_feishu_workspace.sh` 会把仓库里的 `workspace_assets/` 同步到运行时 workspace，因此运行时看到的 skill、hook、tool 都是这个 Issue 机器人自己的，而不是 OpenClaw 的通用默认内容。
+- `scripts/sync_to_feishu_workspace.sh` 会把仓库里的 `workspace_assets/` 同步到运行时 workspace，因此运行时看到的 skill、hook、tool 都是这个 Issue 智能体自己的，而不是 OpenClaw 的通用默认内容。
 
 ### 2. 本地 GitHub App 鉴权库
 
-这一步解决的是“机器人为什么不用 `gh auth login` 也能真正写 GitHub”。
+这一步解决的是“智能体为什么不用 `gh auth login` 也能真正写 GitHub”。
 
 源码位置：
 
@@ -156,7 +156,7 @@ sequenceDiagram
 
 ### 4. `pending_action` 待确认状态机
 
-这一步是当前最核心的安全垫。没有它，机器人就只是“模型说了算”；有了它，才有真正的“预览、确认、执行”分离。
+这一步是当前最核心的安全垫。没有它，智能体就只是“模型说了算”；有了它，才有真正的“预览、确认、执行”分离。
 
 源码位置：
 
@@ -193,7 +193,7 @@ sequenceDiagram
 - 只有发起人本人或 `policy.admins` 里的管理员，才能确认或取消。
 - 真正执行时，它不会自己直接调 GitHub，而是再次调用 `pending_action.mjs --action execute`，让执行出口保持统一。
 
-## 按图展开：链路一“飞书 @机器人 创建 GitHub Issue（创建前确认）”
+## 按图展开：链路一“飞书 @智能体 创建 GitHub Issue（创建前确认）”
 
 ### 步骤 1：飞书消息入口
 
@@ -217,7 +217,7 @@ sequenceDiagram
 
 实现逻辑：
 
-- `policy.example.json` 提供 `repoAliases`，例如 `robot -> yeying-community/robot`。
+- `policy.example.json` 提供 `repoAliases`，例如 `agent -> yeying-community/agent`。
 - `github-issue-tool` skill 告诉模型：遇到 issue 请求时，先解析 owner/repo，再生成标题、正文、标签、负责人等草案。
 - `AGENTS.md` 再进一步把这件事固定成当前 workspace 的主工作流。
 
@@ -363,7 +363,7 @@ sequenceDiagram
 - 普通“帮我提个 issue”“这个文档要补一下”这类初始请求，并没有代码级 deterministic router。
 - 它主要依赖模型读 `AGENTS.md` 和 `SKILL.md` 后，自主判断要不要走 issue 工具链。
 
-这就是为什么当前有一个很明显的问题：如果用户没有在 `@` 时说出 `issue` 之类关键词，或者说法太像普通聊天，机器人就可能完全没有切进 issue 工作流，而且连个提示都不给。
+这就是为什么当前有一个很明显的问题：如果用户没有在 `@` 时说出 `issue` 之类关键词，或者说法太像普通聊天，智能体就可能完全没有切进 issue 工作流，而且连个提示都不给。
 
 ## 当前实现最不严谨、最值得优先改的地方
 
@@ -377,8 +377,8 @@ sequenceDiagram
 
 问题本质：
 
-- 现在“是不是要进入 issue 机器人流程”主要靠模型自己判断。
-- 这导致它更像“一个被约束过的通用聊天机器人”，而不是“一个有代码路由兜底的 issue 业务机器人”。
+- 现在“是不是要进入 issue 智能体流程”主要靠模型自己判断。
+- 这导致它更像“一个被约束过的通用聊天智能体”，而不是“一个有代码路由兜底的 issue 业务智能体”。
 - 这也是当前最影响用户感知的问题。
 
 ### 2. 还没有 GitHub 入站事件链路
@@ -392,7 +392,7 @@ sequenceDiagram
 
 - 当前只有“飞书入站 + GitHub 出站”。
 - 没有 GitHub webhook consumer，也没有 comment 轮询器。
-- 所以“代码机器人评论 `/submit` -> issue 机器人自动感知并关闭”这条链路，目前不是已实现功能，只是后续目标。
+- 所以“代码智能体评论 `/submit` -> issue 智能体自动感知并关闭”这条链路，目前不是已实现功能，只是后续目标。
 
 ### 3. `comment` 不走 pending，`close` 才走 pending
 
@@ -415,8 +415,8 @@ sequenceDiagram
 
 问题本质：
 
-- 如果用户发了 `/confirm`，但当前会话没有 pending，机器人不会解释原因。
-- 这会让用户感觉像“机器人没反应”。
+- 如果用户发了 `/confirm`，但当前会话没有 pending，智能体不会解释原因。
+- 这会让用户感觉像“智能体没反应”。
 - 从排障角度看，这一条也会增加沟通成本。
 
 ### 5. GitHub App token 每次都现换，没有缓存
@@ -450,10 +450,10 @@ sequenceDiagram
 - `pending_action.mjs` 是确认闭环的根。
 - `handler.ts` 是飞书确认命令真正落地的根。
 - create/close/comment 三个工具是所有外部副作用的真正出口。
-- `SKILL.md` 和 `AGENTS.md` 则解释了：为什么这个机器人有时能像 issue 机器人，有时又会像通用聊天机器人。
+- `SKILL.md` 和 `AGENTS.md` 则解释了：为什么这个智能体有时能像 issue 智能体，有时又会像通用聊天智能体。
 
 ## 一句话总结
 
 当前这套实现，本质上不是一个“代码硬路由的 GitHub Issue 网关”，而是一个“被专门约束过的 OpenClaw workspace + 本地 GitHub App 工具链”。
 
-它已经足够支撑“飞书里预览后创建 Issue”“飞书里确认后关闭 Issue”“对明确目标 Issue 直接评论 `/run`”这三件事；但它最关键的短板也很明确：初始用户意图识别仍然太依赖模型，不够像一个真正严格的 Issue 业务机器人。
+它已经足够支撑“飞书里预览后创建 Issue”“飞书里确认后关闭 Issue”“对明确目标 Issue 直接评论 `/run`”这三件事；但它最关键的短板也很明确：初始用户意图识别仍然太依赖模型，不够像一个真正严格的 Issue 业务智能体。

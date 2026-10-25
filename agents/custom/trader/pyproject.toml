@@ -1,0 +1,21 @@
+[project]
+name = "trader-bot"
+version = "0.1.0"
+description = "Resident strategy-trading agent for service-loop validation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0.2",
+    "requests>=2.32.0",
+]
+
+[project.scripts]
+trader-bot = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

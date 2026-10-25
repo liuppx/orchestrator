@@ -8,14 +8,15 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub.api import public_router
+from hub.api import internal_router, public_router
 from hub.config import Settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
-    app = FastAPI(title="Robot Control Plane", version="0.1.0")
+    app = FastAPI(title="Agent Control Plane", version="0.1.0")
 
+    app.include_router(internal_router)
     app.include_router(public_router)
 
     ui_dir = settings.ui_dir

@@ -26,7 +26,7 @@ export function LoginPage() {
 
   useEffect(() => {
     if (session.isAuthenticated) {
-      void navigate({ to: '/robots', replace: true })
+      void navigate({ to: '/agents', replace: true })
     }
   }, [navigate, session])
 
@@ -36,9 +36,9 @@ export function LoginPage() {
     setStatusText('正在请求钱包签名...')
     try {
       await walletLogin()
-      setStatusText('登录成功，正在进入机器人列表...')
+      setStatusText('登录成功，正在进入智能体列表...')
       await refetch()
-      await navigate({ to: '/robots', replace: true })
+      await navigate({ to: '/agents', replace: true })
     } catch (error) {
       setErrorText(errorMessage(error))
       setStatusText(null)
@@ -57,13 +57,13 @@ export function LoginPage() {
             </div>
             <div>
               <h1 className="text-2xl font-semibold text-slate-950">Hub</h1>
-              <p className="text-sm text-slate-500">机器人控制面 React 工作区</p>
+              <p className="text-sm text-slate-500">智能体控制面 React 工作区</p>
             </div>
           </div>
           <div className="space-y-4">
             <h2 className="text-3xl font-semibold tracking-tight text-slate-950">钱包登录入口</h2>
             <p className="max-w-2xl text-sm leading-6 text-slate-600">
-              连接钱包后进入机器人工作区。当前页面只保留登录主流程和会话状态，不展示额外说明面板。
+              连接钱包后进入智能体工作区。当前页面只保留登录主流程和会话状态，不展示额外说明面板。
             </p>
           </div>
           <div className="mt-8 flex flex-wrap gap-3">

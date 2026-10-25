@@ -1,5 +1,5 @@
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { Play, RefreshCw, Save, SquareTerminal } from 'lucide-react'
+import { Activity, LockOpen, Play, RefreshCw, Save, SquareTerminal } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 
@@ -9,23 +9,30 @@ import { Input } from '../../components/ui/input'
 import { Panel } from '../../components/ui/panel'
 import { Select } from '../../components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
-import { useRobotAction, useRobotConfigUpdate } from '../../platform/robots/mutations'
-import { useRobotWorkspaceSummary } from '../../platform/robots/queries'
+import { useAgentAction, useAgentConfigUpdate, useAgentOrderUnlock } from '../../platform/agents/mutations'
+import { useAgentWorkspaceSummary } from '../../platform/agents/queries'
 import { cn } from '../../platform/core/utils'
 import {
+  buildCandidateReviewSummary,
   buildConfigDefaults,
   buildCopiedStrategyDefaults,
+  buildMarketObservation,
   buildNewStrategyDefaults,
+  buildOrderLedgerDetailFields,
+  buildOrderLedgerEntries,
   buildRecordItems,
   buildRecentStrategyRecords,
+  buildRunBatches,
   buildStrategyOptions,
   buildStrategySnapshots,
+  buildTraderDiagnostics,
+  buildWatchlistCandidates,
   filterRecordsByStrategy,
   formatBrowserDateTime,
   normalizeStrategyPayload,
 } from './trader-helpers'
 import { ConfigField, StrategyBooleanToggles } from './trader-form-components'
-import type { RecordFilter, TraderConfigForm } from './trader-helpers'
+import type { OrderLedgerEntry, RecordFilter, TraderConfigForm } from './trader-helpers'
 
 function CompactFieldList({
   items,
@@ -84,7 +91,7 @@ function RecordTable({
               </div>
               <div>
                 <Link
-                  to="/robots/trader/$strategyId/records/$recordId"
+                  to="/agents/trader/$strategyId/records/$recordId"
                   params={{ strategyId, recordId: record.id }}
                   className="text-sm font-medium text-sky-700 hover:text-sky-800"
                 >
@@ -102,13 +109,22 @@ function RecordTable({
 export function TraderStrategyPage() {
   const { strategyId } = useParams({ strict: false }) as { strategyId?: string }
   const navigate = useNavigate()
-  const { data, isLoading, isFetching, refetch } = useRobotWorkspaceSummary('trader')
-  const runOnce = useRobotAction('trader', 'run-once')
-  const start = useRobotAction('trader', 'start')
-  const stop = useRobotAction('trader', 'stop')
-  const saveConfig = useRobotConfigUpdate('trader')
+  const { data, isLoading, isFetching, refetch } = useAgentWorkspaceSummary('trader')
+  const runOnce = useAgentAction('trader', 'run-once')
+  const start = useAgentAction('trader', 'start')
+  const stop = useAgentAction('trader', 'stop')
+  const diagnose = useAgentAction('trader', 'diagnose')
+  const initConfig = useAgentAction('trader', 'init-config')
+  const saveConfig = useAgentConfigUpdate('trader')
+  const unlockOrder = useAgentOrderUnlock('trader')
   const strategySnapshots = useMemo(() => buildStrategySnapshots(data), [data])
   const strategyOptions = useMemo(() => buildStrategyOptions(data, strategySnapshots), [data, strategySnapshots])
+  const runBatches = useMemo(() => buildRunBatches(data), [data])
+  const diagnostics = useMemo(() => buildTraderDiagnostics(data), [data])
+  const marketObservation = useMemo(() => buildMarketObservation(data), [data])
+  const candidateReview = useMemo(() => buildCandidateReviewSummary(data), [data])
+  const watchlistCandidates = useMemo(() => buildWatchlistCandidates(data), [data])
+  const ledgerEntries = useMemo(() => buildOrderLedgerEntries(data), [data])
   const effectiveStrategyId = strategyId ?? strategyOptions[0]?.id ?? null
   const selectedStrategySnapshot = useMemo(
     () => strategySnapshots.find((item) => item.id === effectiveStrategyId) ?? null,
@@ -121,6 +137,7 @@ export function TraderStrategyPage() {
   const [draftStrategy, setDraftStrategy] = useState<TraderConfigForm | null>(null)
   const [tab, setTab] = useState('status')
   const [recordFilter, setRecordFilter] = useState<RecordFilter>('all')
+  const [selectedLedgerKey, setSelectedLedgerKey] = useState<string | null>(null)
   const records = useMemo(() => buildRecordItems(data), [data])
   const currentStrategyRecords = useMemo(() => filterRecordsByStrategy(records, effectiveStrategyId), [effectiveStrategyId, records])
   const filteredCurrentStrategyRecords = useMemo(() => {
@@ -133,10 +150,25 @@ export function TraderStrategyPage() {
     () => buildRecentStrategyRecords(records, effectiveStrategyId),
     [effectiveStrategyId, records],
   )
+  const currentStrategyLedgerEntries = useMemo(
+    () => ledgerEntries.filter((item) => item.strategyId === effectiveStrategyId),
+    [effectiveStrategyId, ledgerEntries],
+  )
+  const selectedLedgerEntry = useMemo(
+    () =>
+      currentStrategyLedgerEntries.find((item) => `${item.tradingDay}-${item.orderKey}` === selectedLedgerKey) ??
+      currentStrategyLedgerEntries[0] ??
+      null,
+    [currentStrategyLedgerEntries, selectedLedgerKey],
+  )
+  const selectedLedgerDetailFields = useMemo(
+    () => (selectedLedgerEntry ? buildOrderLedgerDetailFields(selectedLedgerEntry) : []),
+    [selectedLedgerEntry],
+  )
 
   useEffect(() => {
     if (!strategyId && strategyOptions[0]) {
-      void navigate({ to: '/robots/trader/$strategyId', params: { strategyId: strategyOptions[0].id }, replace: true })
+      void navigate({ to: '/agents/trader/$strategyId', params: { strategyId: strategyOptions[0].id }, replace: true })
     }
   }, [navigate, strategyId, strategyOptions])
 
@@ -179,19 +211,42 @@ export function TraderStrategyPage() {
     })
     setDraftStrategy(null)
     if (values.id !== effectiveStrategyId) {
-      await navigate({ to: '/robots/trader/$strategyId', params: { strategyId: values.id } })
+      await navigate({ to: '/agents/trader/$strategyId', params: { strategyId: values.id } })
     }
   }
 
-  const actionError = runOnce.error?.message || start.error?.message || stop.error?.message || saveConfig.error?.message
+  function unlockLedgerEntry(entry: (typeof currentStrategyLedgerEntries)[number]) {
+    unlockOrder.mutate({
+      trading_day: entry.tradingDay,
+      strategy_id: entry.strategyId,
+      symbol: entry.symbol,
+      side: entry.side,
+      reason: 'manual retry from hub',
+      actor: 'hub',
+    })
+  }
+
+  function ledgerHistory(entry: OrderLedgerEntry | null) {
+    const history = entry?.payload.guard_history
+    return Array.isArray(history) ? history.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []
+  }
+
+  const actionError =
+    runOnce.error?.message ||
+    start.error?.message ||
+    stop.error?.message ||
+    diagnose.error?.message ||
+    initConfig.error?.message ||
+    saveConfig.error?.message ||
+    unlockOrder.error?.message
 
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white px-6 py-5">
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <Link to="/robots">机器人</Link>
+          <Link to="/agents">智能体</Link>
           <span>/</span>
-          <Link to="/robots/trader">交易员</Link>
+          <Link to="/agents/trader">交易员</Link>
           <span>/</span>
           <span className="text-slate-900">{selectedStrategySnapshot?.name ?? effectiveStrategyId ?? '策略'}</span>
         </div>
@@ -212,6 +267,10 @@ export function TraderStrategyPage() {
             <Button variant="outline" onClick={() => stop.mutate()} disabled={stop.isPending}>
               <SquareTerminal className="h-4 w-4" />
               {stop.isPending ? '停止中...' : '停止'}
+            </Button>
+            <Button variant="outline" onClick={() => diagnose.mutate()} disabled={diagnose.isPending}>
+              <Activity className="h-4 w-4" />
+              {diagnose.isPending ? '诊断中...' : '诊断'}
             </Button>
             <Button variant="outline" onClick={() => void refetch()}>
               <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
@@ -283,6 +342,179 @@ export function TraderStrategyPage() {
         </TabsList>
 
         <TabsContent value="status">
+          <Panel
+            title="运行诊断"
+            description="启动前检查配置、数据源、broker 和 runtime。诊断结果只显示凭证是否已配置，不显示 token。"
+          >
+            {diagnostics ? (
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={diagnostics.ok ? 'success' : 'muted'}>
+                      {diagnostics.ok ? '可运行' : '有阻塞'}
+                    </Badge>
+                    <Badge variant={diagnostics.brokerSupported ? 'success' : 'muted'}>
+                      {diagnostics.brokerProvider}
+                    </Badge>
+                    <Badge variant={diagnostics.accessTokenConfigured ? 'success' : 'muted'}>
+                      access token {diagnostics.accessTokenConfigured ? '已配置' : '缺失'}
+                    </Badge>
+                    <Badge variant={diagnostics.refreshTokenConfigured ? 'success' : 'muted'}>
+                      refresh token {diagnostics.refreshTokenConfigured ? '已配置' : '缺失'}
+                    </Badge>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={initConfig.isPending}
+                      onClick={() => initConfig.mutate()}
+                    >
+                      <Save className="h-4 w-4" />
+                      {initConfig.isPending ? '初始化中...' : '初始化配置'}
+                    </Button>
+                  </div>
+                  {diagnostics.errors.length ? (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-4">
+                      <div className="text-sm font-medium text-rose-900">阻塞项</div>
+                      <ul className="mt-2 space-y-1 text-sm text-rose-700">
+                        {diagnostics.errors.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {diagnostics.warnings.length ? (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                      <div className="text-sm font-medium text-amber-900">提醒</div>
+                      <ul className="mt-2 space-y-1 text-sm text-amber-700">
+                        {diagnostics.warnings.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {!diagnostics.errors.length && !diagnostics.warnings.length ? (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+                      当前诊断没有发现阻塞项或提醒。
+                    </div>
+                  ) : null}
+                </div>
+                <CompactFieldList
+                  items={[
+                    { label: '策略总数', value: String(diagnostics.strategyCount) },
+                    { label: '启用策略', value: String(diagnostics.enabledStrategyCount) },
+                    { label: '停用策略', value: String(diagnostics.disabledStrategyCount) },
+                    { label: 'Broker 配置', value: diagnostics.brokerConfigured == null ? '-' : diagnostics.brokerConfigured ? '已配置' : '未配置' },
+                    { label: '数据源', value: diagnostics.dataProvider },
+                    { label: '数据地址', value: diagnostics.dataBaseUrl },
+                    { label: 'env 文件', value: diagnostics.envFileExists ? '存在' : '缺失' },
+                    { label: 'runtime', value: diagnostics.runtimeDirExists ? '存在' : '待创建' },
+                    { label: 'state 文件', value: diagnostics.stateFileExists ? '存在' : '未生成' },
+                    { label: '策略文件', value: diagnostics.strategyFile },
+                  ]}
+                />
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                还没有诊断数据。
+              </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="市场观察与候选池"
+            description="把已配置观察标的按强弱和触发结果分成 A/B/C，先用于复盘和人工判断。"
+          >
+            {marketObservation ? (
+              <div className="space-y-4">
+                <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+                  <CompactFieldList
+                    items={[
+                      { label: '交易许可', value: marketObservation.tradePermission },
+                      { label: '候选数量', value: String(marketObservation.candidateCount) },
+                      { label: 'A 级', value: String(marketObservation.gradeCounts.A) },
+                      { label: 'B 级', value: String(marketObservation.gradeCounts.B) },
+                      { label: 'C 级', value: String(marketObservation.gradeCounts.C) },
+                      { label: '错误数', value: String(marketObservation.errorCount) },
+                    ]}
+                  />
+                  <div className="overflow-hidden rounded-lg border border-slate-200">
+                    <div className="hidden grid-cols-[64px_96px_minmax(0,1fr)_72px_88px_104px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500 lg:grid">
+                      <div>等级</div>
+                      <div>标的</div>
+                      <div>理由</div>
+                      <div>分数</div>
+                      <div>信号</div>
+                      <div>许可</div>
+                    </div>
+                    <div className="divide-y divide-slate-200">
+                      {watchlistCandidates.length ? (
+                        watchlistCandidates.map((candidate) => (
+                          <div
+                            key={`${candidate.strategyId}-${candidate.symbol}`}
+                            className="grid gap-3 px-4 py-3 text-sm lg:grid-cols-[64px_96px_minmax(0,1fr)_72px_88px_104px] lg:items-center"
+                          >
+                            <div>
+                              <Badge variant={candidate.grade === 'A' ? 'success' : candidate.grade === 'B' ? 'default' : 'muted'}>
+                                {candidate.grade}
+                              </Badge>
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-medium text-slate-900">{candidate.symbol}</div>
+                              <div className="mt-1 truncate text-xs text-slate-500">{candidate.name}</div>
+                            </div>
+                            <div className="min-w-0 text-slate-600">
+                              <div className="truncate">{candidate.reasons[0] ?? candidate.signalReason}</div>
+                              {candidate.riskFlags.length ? (
+                                <div className="mt-1 truncate text-xs text-amber-700">{candidate.riskFlags[0]}</div>
+                              ) : null}
+                            </div>
+                            <div className="text-slate-900">{candidate.score}</div>
+                            <div className="text-slate-900">{candidate.signalAction}</div>
+                            <div className="text-slate-900">{candidate.tradePermission}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="px-4 py-4 text-sm text-slate-500">最近批次还没有候选池记录。</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {candidateReview ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-sm font-medium text-slate-950">候选池复盘</div>
+                    <div className="mt-3 grid gap-4 md:grid-cols-4">
+                      <div>
+                        <div className="text-xs text-slate-500">复盘数量</div>
+                        <div className="mt-1 text-lg font-semibold text-slate-950">{candidateReview.reviewCount}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500">正收益</div>
+                        <div className="mt-1 text-lg font-semibold text-emerald-700">{candidateReview.positiveCount}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500">失败</div>
+                        <div className="mt-1 text-lg font-semibold text-rose-700">{candidateReview.failedCount}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500">平均收益</div>
+                        <div className="mt-1 text-lg font-semibold text-slate-950">
+                          {candidateReview.averageReturnPct == null ? '-' : `${candidateReview.averageReturnPct.toFixed(2)}%`}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                运行一次后会生成市场观察和候选池。
+              </div>
+            )}
+          </Panel>
+
           <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
             <Panel title="运行摘要" description="这里保留全局运行摘要，帮助判断本轮 run_once 的范围和结果。">
               <CompactFieldList
@@ -291,10 +523,36 @@ export function TraderStrategyPage() {
                   { label: '最近运行时间', value: formatBrowserDateTime(data?.last_run_at) },
                   { label: '最近评估策略', value: String(data?.last_cycle_strategy_count ?? 0) },
                   { label: '最近数据请求', value: String(data?.last_cycle_request_count ?? 0) },
+                  { label: '最近批次数', value: String(runBatches.length) },
                   { label: '最近信号', value: formatBrowserDateTime(data?.last_signal_at) },
                   { label: '最近订单', value: formatBrowserDateTime(data?.last_order_at) },
                 ]}
               />
+              {runBatches.length ? (
+                <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
+                  <div className="grid grid-cols-[minmax(0,1fr)_64px_80px_64px_64px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+                    <div>最近批次</div>
+                    <div>策略</div>
+                    <div>订单计划</div>
+                    <div>抑制</div>
+                    <div>错误</div>
+                  </div>
+                  <div className="divide-y divide-slate-200">
+                    {runBatches.slice(0, 4).map((run) => (
+                      <div key={run.runId} className="grid grid-cols-[minmax(0,1fr)_64px_80px_64px_64px] gap-3 px-4 py-3 text-sm">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-slate-900">{run.runId}</div>
+                          <div className="mt-1 text-xs text-slate-500">{formatBrowserDateTime(run.finishedAt ?? run.startedAt)}</div>
+                        </div>
+                        <div className="text-slate-900">{run.strategyCount}</div>
+                        <div className="text-slate-900">{run.orderPlanCount}</div>
+                        <div className={run.suppressedOrderCount ? 'font-medium text-amber-700' : 'text-slate-900'}>{run.suppressedOrderCount}</div>
+                        <div className={run.errorCount ? 'font-medium text-rose-700' : 'text-slate-900'}>{run.errorCount}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </Panel>
 
             <Panel title="当前策略影响" description="固定聚焦当前策略，而不是在大工作台里和其他策略混看。">
@@ -325,6 +583,119 @@ export function TraderStrategyPage() {
               )}
             </Panel>
           </div>
+
+          <Panel title="订单防线" description="查看当前策略当日订单 ledger，必要时人工解锁后允许下一轮重试。">
+            {currentStrategyLedgerEntries.length ? (
+              <div className="overflow-hidden rounded-lg border border-slate-200">
+                <div className="hidden grid-cols-[112px_72px_72px_88px_88px_minmax(0,1fr)_176px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500 lg:grid">
+                  <div>交易日</div>
+                  <div>方向</div>
+                  <div>数量</div>
+                  <div>状态</div>
+                  <div>防线</div>
+                  <div>记录时间</div>
+                  <div>操作</div>
+                </div>
+                <div className="divide-y divide-slate-200">
+                  {currentStrategyLedgerEntries.map((entry) => (
+                    <div
+                      key={`${entry.tradingDay}-${entry.orderKey}`}
+                      className="grid gap-3 px-4 py-3 text-sm lg:grid-cols-[112px_72px_72px_88px_88px_minmax(0,1fr)_176px] lg:items-center"
+                    >
+                      <div className="font-medium text-slate-900">{entry.tradingDay}</div>
+                      <div className="text-slate-900">{entry.side}</div>
+                      <div className="text-slate-900">{entry.quantity}</div>
+                      <div>
+                        <Badge variant={entry.lifecycleStatus === 'filled' ? 'success' : 'muted'}>
+                          {entry.lifecycleStatus}
+                        </Badge>
+                      </div>
+                      <div>
+                        <Badge variant={entry.guardActive ? 'default' : 'muted'}>
+                          {entry.guardActive ? '锁定' : '已解锁'}
+                        </Badge>
+                      </div>
+                      <div className="min-w-0 text-slate-600">
+                        <div className="truncate">{formatBrowserDateTime(entry.recordedAt)}</div>
+                        {entry.unlockReason !== '-' ? (
+                          <div className="mt-1 truncate text-xs text-slate-500">{entry.unlockReason}</div>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelectedLedgerKey(`${entry.tradingDay}-${entry.orderKey}`)}
+                        >
+                          详情
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={!entry.guardActive || unlockOrder.isPending}
+                          onClick={() => unlockLedgerEntry(entry)}
+                        >
+                          <LockOpen className="h-4 w-4" />
+                          解锁
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                当前策略还没有订单防线记录。
+              </div>
+            )}
+            {selectedLedgerEntry ? (
+              <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="rounded-lg border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-950">Ledger 明细</div>
+                      <div className="mt-1 text-xs text-slate-500">{selectedLedgerEntry.orderKey}</div>
+                    </div>
+                    <Badge variant={selectedLedgerEntry.guardActive ? 'default' : 'muted'}>
+                      {selectedLedgerEntry.guardActive ? '锁定' : '已解锁'}
+                    </Badge>
+                  </div>
+                  <div className="mt-3">
+                    <CompactFieldList items={selectedLedgerDetailFields} />
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-slate-200 p-4">
+                    <div className="text-sm font-medium text-slate-950">解锁历史</div>
+                    {ledgerHistory(selectedLedgerEntry).length ? (
+                      <div className="mt-3 divide-y divide-slate-200 rounded-lg border border-slate-200">
+                        {ledgerHistory(selectedLedgerEntry).map((item, index) => (
+                          <div key={`${item.ts ?? index}`} className="px-3 py-3 text-sm">
+                            <div className="font-medium text-slate-900">{String(item.event ?? '-')}</div>
+                            <div className="mt-1 text-xs text-slate-500">{formatBrowserDateTime(String(item.ts ?? ''))}</div>
+                            <div className="mt-2 text-slate-600">{String(item.reason ?? '-')}</div>
+                            <div className="mt-1 text-xs text-slate-500">actor: {String(item.actor ?? '-')}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-sm text-slate-500">当前 ledger 没有解锁历史。</div>
+                    )}
+                  </div>
+                  <details className="rounded-lg border border-slate-200 bg-slate-950 p-4">
+                    <summary className="cursor-pointer list-none text-sm font-medium text-slate-100">
+                      原始 Ledger JSON
+                    </summary>
+                    <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap text-xs text-slate-100">
+                      {JSON.stringify(selectedLedgerEntry.payload, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              </div>
+            ) : null}
+          </Panel>
         </TabsContent>
 
         <TabsContent value="records">
@@ -454,6 +825,18 @@ export function TraderStrategyPage() {
                   </ConfigField>
                   <ConfigField label="压力位缓冲 %">
                     <Input type="number" step="0.1" {...form.register('resistance_buffer_pct', { valueAsNumber: true })} />
+                  </ConfigField>
+                  <ConfigField label="竞价锁定时间">
+                    <Input {...form.register('auction_lock_time')} />
+                  </ConfigField>
+                  <ConfigField label="开盘处理结束">
+                    <Input {...form.register('auction_open_end_time')} />
+                  </ConfigField>
+                  <ConfigField label="零轴阈值 %">
+                    <Input type="number" step="0.1" {...form.register('auction_zero_threshold_pct', { valueAsNumber: true })} />
+                  </ConfigField>
+                  <ConfigField label="强开阈值 %">
+                    <Input type="number" step="0.1" {...form.register('auction_strong_open_threshold_pct', { valueAsNumber: true })} />
                   </ConfigField>
                   <ConfigField label="午后退出时间">
                     <Input {...form.register('afternoon_exit_time')} />

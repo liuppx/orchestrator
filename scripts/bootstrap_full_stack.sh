@@ -34,8 +34,8 @@ upsert_env_value() {
 }
 
 echo "[step] bootstrap hub"
-if [[ -x "$APP_DIR/.venv/bin/robot-hub" ]]; then
-  echo "[ok] python hub already prepared: $APP_DIR/.venv/bin/robot-hub"
+if [[ -x "$APP_DIR/.venv/bin/agent-hub" ]]; then
+  echo "[ok] python hub already prepared: $APP_DIR/.venv/bin/agent-hub"
 elif command -v uv >/dev/null 2>&1; then
   echo "[step] install python control plane dependencies"
   (cd "$APP_DIR" && uv sync)

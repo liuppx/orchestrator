@@ -1,0 +1,40 @@
+{
+  "admins": [
+    "ou_replace_with_admin_user_id"
+  ],
+  "confirmCommands": [
+    "/confirm",
+    "/submit",
+    "确认",
+    "确认一下",
+    "创建 issue",
+    "创建 github issue",
+    "提交",
+    "提交 issue",
+    "提交 github issue"
+  ],
+  "cancelCommands": [
+    "/cancel",
+    "取消",
+    "算了",
+    "不用了",
+    "先别创建"
+  ],
+  "repoAliases": [
+    {
+      "alias": "agent",
+      "owner": "yeying-community",
+      "repo": "agent"
+    }
+  ],
+  "githubUserAliases": [
+    {
+      "alias": "刘鑫",
+      "login": "kobofare"
+    },
+    {
+      "alias": "张博",
+      "login": "dlwlrma-333"
+    }
+  ]
+}

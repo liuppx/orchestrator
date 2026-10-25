@@ -1,10 +1,10 @@
-# GitHub 机器人方案
+# GitHub 智能体方案
 
 这份文档只讲方案、链路和架构，不讲手把手部署。
 
-如果你要在一台已经安装 OpenClaw 的机器上把 Issue 机器人手动跑起来，先看 [github机器人部署手册.md](github机器人部署手册.md)。
+如果你要在一台已经安装 OpenClaw 的机器上把 Issue 智能体手动跑起来，先看 [github智能体部署手册.md](github智能体部署手册.md)。
 
-当前这套 MVP 的 canonical 代码目录统一放在 `robots/openclaw/issuer/`，默认不依赖 GitHub webhook。
+当前这套 MVP 的 canonical 代码目录统一放在 `agents/openclaw/issuer/`，默认不依赖 GitHub webhook。
 
 ```mermaid
 flowchart TB
@@ -59,9 +59,9 @@ sequenceDiagram
     participant GitHub as GitHub 服务
 
     rect rgb(245, 250, 255)
-        note over User,GitHub: 链路一：飞书 @机器人 创建 GitHub Issue（创建前确认）
+        note over User,GitHub: 链路一：飞书 @智能体 创建 GitHub Issue（创建前确认）
 
-        User->>FeishuBot: @机器人 仓库 + Issue 需求
+        User->>FeishuBot: @智能体 仓库 + Issue 需求
         FeishuBot->>OpenClaw: 推送群消息事件
         OpenClaw->>OpenClaw: 解析仓库、需求、Issue 模板
 
@@ -70,17 +70,17 @@ sequenceDiagram
 
             OpenClaw->>OpenClaw: 分析准备创建怎样的 Issue<br/>生成标题、正文、标签、负责人、拆解步骤/方案
             OpenClaw-->>FeishuBot: 返回 Issue 创建计划
-            FeishuBot-->>User: 群内展示 Issue 草案与创建计划<br/>提示：满意后 @机器人 /confirm
+            FeishuBot-->>User: 群内展示 Issue 草案与创建计划<br/>提示：满意后 @智能体 /confirm
 
             loop 用户继续沟通，直到满意
-                User->>FeishuBot: @机器人 补充/修改需求
+                User->>FeishuBot: @智能体 补充/修改需求
                 FeishuBot->>OpenClaw: 推送补充消息事件
                 OpenClaw->>OpenClaw: 基于上下文更新 Issue 创建计划
                 OpenClaw-->>FeishuBot: 返回新版 Issue 草案/方案
                 FeishuBot-->>User: 群内展示新版创建计划
             end
 
-            User->>FeishuBot: @机器人 /confirm
+            User->>FeishuBot: @智能体 /confirm
             FeishuBot->>OpenClaw: 推送确认消息事件
             OpenClaw->>OpenClaw: 确认当前 Issue 创建计划<br/>冻结最终 Issue payload
         end
@@ -149,7 +149,7 @@ flowchart LR
     end
 
     subgraph Ingress["接入服务"]
-        feishuBot["飞书机器人服务"]
+        feishuBot["飞书智能体服务"]
         webhookEntry["GitHub Webhook 回调入口"]
     end
 

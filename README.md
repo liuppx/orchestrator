@@ -1,10 +1,10 @@
-# Robot
+# Agent
 
 ## 项目定位
 
-Robot 当前的主产品形态是 **Hub 控制平面**，用于统一部署、管理和编排多种机器人实例，并动态装配技能、工具与渠道能力。
+Agent 当前的主产品形态是 **Hub 控制平面**，用于统一部署、管理和编排多种智能体实例，并动态装配技能、工具与渠道能力。
 
-当前仓库里保留了 Hub 控制面、机器人定义、运维脚本和历史参考材料。主入口：
+当前仓库里保留了 Hub 控制面、智能体定义、运维脚本和历史参考材料。主入口：
 
 - **当前生产入口**：`hub/`
 - **生产启停**：`scripts/starter.sh`
@@ -16,14 +16,14 @@ Robot 当前的主产品形态是 **Hub 控制平面**，用于统一部署、�
 本仓库当前以 **Hub 控制平面** 为唯一生产入口：
 
 - 提供 Web 控制台（钱包登录）
-- 统一创建/启动/停止 WhatsApp 与 DingTalk 机器人实例
+- 统一创建/启动/停止 WhatsApp 与 DingTalk 智能体实例
 - 每实例独立 OpenClaw profile、目录、端口，互不影响
 - 模型统一走 Router（默认 `gpt-5.3-codex`）
 
 你可以把它理解为：
 
-- OpenClaw 负责“机器人执行”
-- Hub 负责“机器人编排与运维”
+- OpenClaw 负责“智能体执行”
+- Hub 负责“智能体编排与运维”
 
 ### 功能特性
 - Web 控制台（钱包登录 + 实例管理）
@@ -40,9 +40,9 @@ Robot 当前的主产品形态是 **Hub 控制平面**，用于统一部署、�
 - `scripts/`：Hub 启停、打包、体检、OpenClaw 准备和协作脚本
 - `config/`：当前运行配置模板
 - `docs/`：当前设计文档和运维手册
-- `robots/openclaw/`：当前受控机器人实现目录，包含基于 OpenClaw 的机器人子系统
-- `robots/nanobot/`：纳入统一机器人目录的 nanobot 实现
-- `workspace/`：机器人实例使用的工作区模板
+- `agents/openclaw/`：当前受控智能体实现目录，包含基于 OpenClaw 的智能体子系统
+- `agents/nanobot/`：纳入统一智能体目录的 nanobot 实现
+- `workspace/`：智能体实例使用的工作区模板
 
 完整说明见 `docs/repository-layout.md`。
 
@@ -87,65 +87,44 @@ HUB_INSTANCE_PORT_END=18999
 
 ## 本地开发
 
-本地开发以快速启动和热更新为主，前后端分进程运行。
-
-### 1. 准备依赖
+本地开发前后端分开运行，打开两个终端；以下命令都从仓库根目录执行。首次准备依赖和本地 backend 配置：
 
 ```bash
-bash scripts/bootstrap_full_stack.sh
+cd hub/backend
+uv sync
+test -f .env || cp .env.template .env
+cd ../frontend
+npm ci
+cd ../..
 ```
 
-本地 backend 配置文件：
+如果 `hub/backend/.env` 已存在，跳过 `cp .env.template .env`，避免覆盖本地配置。这个本地配置不提交到远端。无需运行 `scripts/bootstrap_full_stack.sh` 来启动 Hub；该脚本用于全栈/部署准备，可能安装 OpenClaw。
 
-```bash
-cp hub/backend/.env.template hub/backend/.env
-```
-
-`.env` 只用于本地开发 backend，不提交到远端。
-
-### 2. 启动 backend
+终端 1：启动 backend（保持该终端运行）
 
 ```bash
 cd hub/backend
 uv run python -m uvicorn hub.app:create_app --factory --reload --host 127.0.0.1 --port 3900
 ```
 
-### 3. 启动 frontend
+终端 2：启动 frontend（保持该终端运行）
 
 ```bash
 cd hub/frontend
-npm install
 npm run dev
 ```
 
-访问：`http://127.0.0.1:5174/`
-
-Vite 会把 `/api` 代理到 `http://127.0.0.1:3900`。
-
-### 4. 停止开发服务
-
-- 正常停止：在 backend 和 frontend 各自终端里按 `Ctrl+C`
-- 如果端口被旧进程占用，可手动清理：
-
-```bash
-lsof -tiTCP:3900 -sTCP:LISTEN | xargs kill
-lsof -tiTCP:5174 -sTCP:LISTEN | xargs kill
-```
-
-### 5. 快速测试
-
-```bash
-cd hub/backend
-uv run python -m unittest discover -s tests
-```
-
-```bash
-cd hub/frontend
-npm run build
-```
+浏览器访问 `http://127.0.0.1:5174/`。Vite 会将 `/api` 请求代理到 backend 的 `http://127.0.0.1:3900`。停止时分别在两个终端按 `Ctrl+C`。检查 backend：
 
 ```bash
 curl -sS http://127.0.0.1:3900/api/v1/public/health
+```
+
+运行 backend 测试和 frontend 构建：
+
+```bash
+(cd hub/backend && uv run python -m unittest discover -s tests)
+(cd hub/frontend && npm run build)
 ```
 
 ## 生产部署

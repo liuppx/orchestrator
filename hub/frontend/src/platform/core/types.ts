@@ -36,7 +36,7 @@ export type AuthChallenge = {
   expires_at: string
 }
 
-export type RobotListItem = {
+export type AgentListItem = {
   key: string
   display_name: string
   category: string
@@ -44,11 +44,11 @@ export type RobotListItem = {
   available: boolean
 }
 
-export type RobotListResponse = {
-  items: RobotListItem[]
+export type AgentListResponse = {
+  items: AgentListItem[]
 }
 
-export type RobotWorkspaceSummary = {
+export type AgentWorkspaceSummary = {
   available: boolean
   broker: string
   running: boolean
@@ -61,6 +61,13 @@ export type RobotWorkspaceSummary = {
   state: Record<string, unknown>
   recent_signals: Array<Record<string, unknown>>
   recent_orders: Array<Record<string, unknown>>
+  recent_runs: Array<Record<string, unknown>>
+  order_ledger_entries: Array<Record<string, unknown>>
+  diagnostics: Record<string, unknown>
+  market_observation: Record<string, unknown>
+  watchlist_candidates: Array<Record<string, unknown>>
+  candidate_review: Record<string, unknown>
+  candidate_reviews: Array<Record<string, unknown>>
   service_log_tail: string
   strategy_count: number
   signal_count: number
@@ -77,13 +84,13 @@ export type RobotWorkspaceSummary = {
   last_snapshot_path: string | null
 }
 
-export type RobotWorkspaceActionResponse = {
+export type AgentWorkspaceActionResponse = {
   executed: boolean
   action: string
   stdout: string
 }
 
-export type RobotWorkspaceConfigUpdateResponse = {
+export type AgentWorkspaceConfigUpdateResponse = {
   saved: boolean
   broker: string
   strategyCount: number
@@ -170,12 +177,12 @@ export type BotInstanceDiagnoseResponse = {
   evidence: string[]
 }
 
-export type RobotTypeItem = {
+export type AgentTypeItem = {
   id: string
   name: string
   requires: string[]
 }
 
-export type RobotTypesResponse = {
-  botTypes: RobotTypeItem[]
+export type AgentTypesResponse = {
+  agentTypes: AgentTypeItem[]
 }

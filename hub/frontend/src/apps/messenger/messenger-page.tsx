@@ -28,14 +28,14 @@ import {
   useMessengerInstanceAction,
   useMessengerInstanceCreate,
   useMessengerWhatsappPair,
-} from '../../platform/robots/mutations'
+} from '../../platform/agents/mutations'
 import {
   useMessengerInstanceDiagnose,
   useMessengerInstanceLogs,
   useMessengerInstances,
-  useMessengerRobotTypes,
-  useRobotWorkspaceSummary,
-} from '../../platform/robots/queries'
+  useMessengerAgentTypes,
+  useAgentWorkspaceSummary,
+} from '../../platform/agents/queries'
 import { cn } from '../../platform/core/utils'
 
 type MetricCard = {
@@ -54,9 +54,9 @@ type MessengerCreateForm = {
 }
 
 export function MessengerPage() {
-  const { data, isLoading, isFetching, refetch } = useRobotWorkspaceSummary('messenger')
+  const { data, isLoading, isFetching, refetch } = useAgentWorkspaceSummary('messenger')
   const instancesQuery = useMessengerInstances()
-  const robotTypesQuery = useMessengerRobotTypes()
+  const agentTypesQuery = useMessengerAgentTypes()
   const summaryState = data?.state || {}
   const instanceCount =
     typeof summaryState.instanceCount === 'number' ? summaryState.instanceCount : 0
@@ -106,7 +106,7 @@ export function MessengerPage() {
     typeof summaryState.template === 'string' && summaryState.template ? summaryState.template : '未设置'
   const kinds = Array.isArray(summaryState.kinds) ? summaryState.kinds.join(' / ') : 'WhatsApp / DingTalk'
   const selectedKind = form.watch('kind')
-  const robotTypes = robotTypesQuery.data?.botTypes ?? []
+  const agentTypes = agentTypesQuery.data?.agentTypes ?? []
 
   async function onCreate(values: MessengerCreateForm) {
     await createInstance.mutateAsync({
@@ -127,8 +127,8 @@ export function MessengerPage() {
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white px-6 py-5">
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <Link to="/robots" className="hover:text-slate-900">
-            机器人
+          <Link to="/agents" className="hover:text-slate-900">
+            智能体
           </Link>
           <ChevronRight className="h-4 w-4" />
           <span className="text-slate-900">信使</span>
@@ -136,7 +136,7 @@ export function MessengerPage() {
         <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold text-slate-950">信使工作台</h1>
-            <p className="mt-1 text-sm text-slate-500">统一承载多实例消息机器人，当前先展示摘要与迁移边界。</p>
+            <p className="mt-1 text-sm text-slate-500">统一承载多实例消息智能体，当前先展示摘要与迁移边界。</p>
           </div>
           <div className="flex items-center gap-3">
             <Badge variant={data?.available ? 'success' : 'muted'}>{data?.available ? '已接入' : '未接入'}</Badge>
@@ -199,8 +199,8 @@ export function MessengerPage() {
             <div className="grid gap-2">
               <Label>类型</Label>
               <Select {...form.register('kind')}>
-                {robotTypes.length ? (
-                  robotTypes.map((item) => (
+                {agentTypes.length ? (
+                  agentTypes.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}
                     </option>

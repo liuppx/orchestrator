@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     openclaw_prefix: str | None = Field(default=None, alias="HUB_OPENCLAW_PREFIX")
     admin_token: str = Field(default="change-me-admin-token", alias="HUB_ADMIN_TOKEN")
     internal_token: str = Field(default="change-me-internal-token", alias="HUB_INTERNAL_TOKEN")
+    identity_node_url: str | None = Field(default=None, alias="IDENTITY_NODE_URL")
+    identity_app_id: str = Field(default="agent-hub", alias="IDENTITY_APP_ID")
 
     @property
     def resolved_runtime_dir(self) -> Path:

@@ -1,7 +1,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
 
 import { LoginPage } from '../apps/hub/login-page'
-import { RobotsPage } from '../apps/hub/robots-page'
+import { AgentsPage } from '../apps/hub/agents-page'
 import { MessengerPage } from '../apps/messenger/messenger-page'
 import { TraderHomePage } from '../apps/trader/trader-home-page'
 import { TraderRecordPage } from '../apps/trader/trader-record-page'
@@ -32,39 +32,39 @@ const shellRoute = createRoute({
   component: ShellLayout,
 })
 
-const robotsRoute = createRoute({
+const agentsRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/robots',
-  component: RobotsPage,
+  path: '/agents',
+  component: AgentsPage,
 })
 
 const traderRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/robots/trader',
+  path: '/agents/trader',
   component: TraderHomePage,
 })
 
 const traderStrategyRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/robots/trader/$strategyId',
+  path: '/agents/trader/$strategyId',
   component: TraderStrategyPage,
 })
 
 const traderRecordRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/robots/trader/$strategyId/records/$recordId',
+  path: '/agents/trader/$strategyId/records/$recordId',
   component: TraderRecordPage,
 })
 
 const messengerRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/robots/messenger',
+  path: '/agents/messenger',
   component: MessengerPage,
 })
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  shellRoute.addChildren([robotsRoute, traderRoute, traderStrategyRoute, traderRecordRoute, messengerRoute]),
+  shellRoute.addChildren([agentsRoute, traderRoute, traderStrategyRoute, traderRecordRoute, messengerRoute]),
 ])
 
 export const router = createRouter({ routeTree })

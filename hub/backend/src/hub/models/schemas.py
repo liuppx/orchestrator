@@ -5,11 +5,11 @@ from pydantic import BaseModel
 
 class HealthResponse(BaseModel):
     ok: bool = True
-    service: str = "robot-hub"
+    service: str = "agent-hub"
 
 
 class VersionResponse(BaseModel):
-    name: str = "robot-hub"
+    name: str = "agent-hub"
     version: str = "0.1.0"
     runtime: str = "python"
 
@@ -49,7 +49,7 @@ class AuthSessionView(BaseModel):
     ucan_signature: dict[str, Any] | list[Any] | str | int | float | bool | None = None
 
 
-class RobotWorkspaceSummaryResponse(BaseModel):
+class AgentWorkspaceSummaryResponse(BaseModel):
     available: bool
     broker: str
     running: bool
@@ -62,6 +62,13 @@ class RobotWorkspaceSummaryResponse(BaseModel):
     state: dict[str, Any]
     recent_signals: list[dict[str, Any]]
     recent_orders: list[dict[str, Any]]
+    recent_runs: list[dict[str, Any]] = []
+    order_ledger_entries: list[dict[str, Any]] = []
+    diagnostics: dict[str, Any] = {}
+    market_observation: dict[str, Any] = {}
+    watchlist_candidates: list[dict[str, Any]] = []
+    candidate_review: dict[str, Any] = {}
+    candidate_reviews: list[dict[str, Any]] = []
     service_log_tail: str
     strategy_count: int = 0
     signal_count: int = 0
@@ -78,25 +85,34 @@ class RobotWorkspaceSummaryResponse(BaseModel):
     last_snapshot_path: str | None = None
 
 
-class RobotWorkspaceConfigUpdateRequest(BaseModel):
+class AgentWorkspaceConfigUpdateRequest(BaseModel):
     broker: str
     strategy_id: str | None = None
     strategy: dict[str, Any]
 
 
-class RobotWorkspaceConfigUpdateResponse(BaseModel):
+class AgentWorkspaceConfigUpdateResponse(BaseModel):
     saved: bool
     broker: str
     strategyCount: int
 
 
-class RobotWorkspaceActionResponse(BaseModel):
+class AgentWorkspaceOrderUnlockRequest(BaseModel):
+    trading_day: str
+    strategy_id: str
+    symbol: str
+    side: str
+    reason: str
+    actor: str = "hub"
+
+
+class AgentWorkspaceActionResponse(BaseModel):
     executed: bool
     action: str
     stdout: str
 
 
-class RobotListItem(BaseModel):
+class AgentListItem(BaseModel):
     key: str
     display_name: str
     category: str
@@ -104,22 +120,22 @@ class RobotListItem(BaseModel):
     available: bool
 
 
-class RobotListResponse(BaseModel):
-    items: list[RobotListItem]
+class AgentListResponse(BaseModel):
+    items: list[AgentListItem]
 
 
 class RouterModelsResponse(BaseModel):
     models: list[str]
 
 
-class RobotTypeItem(BaseModel):
+class AgentTypeItem(BaseModel):
     id: str
     name: str
     requires: list[str]
 
 
-class RobotTypesResponse(BaseModel):
-    botTypes: list[RobotTypeItem]
+class AgentTypesResponse(BaseModel):
+    agentTypes: list[AgentTypeItem]
 
 
 class BotInstanceView(BaseModel):

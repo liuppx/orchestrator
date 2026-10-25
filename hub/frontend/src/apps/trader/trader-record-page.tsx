@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 
 import { Badge } from '../../components/ui/badge'
 import { Panel } from '../../components/ui/panel'
-import { useRobotWorkspaceSummary } from '../../platform/robots/queries'
+import { useAgentWorkspaceSummary } from '../../platform/agents/queries'
 import {
   buildRecordContextFields,
   buildRecordDetailFields,
@@ -37,7 +37,7 @@ export function TraderRecordPage() {
   const params = useParams({ strict: false }) as { strategyId?: string; recordId?: string }
   const strategyId = params.strategyId ?? null
   const recordId = params.recordId ? decodeURIComponent(params.recordId) : null
-  const { data } = useRobotWorkspaceSummary('trader')
+  const { data } = useAgentWorkspaceSummary('trader')
   const records = useMemo(() => buildRecordItems(data), [data])
   const record = useMemo(() => records.find((item) => item.id === recordId) ?? null, [recordId, records])
   const strategySnapshots = useMemo(() => buildStrategySnapshots(data), [data])
@@ -53,11 +53,11 @@ export function TraderRecordPage() {
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white px-6 py-5">
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <Link to="/robots">机器人</Link>
+          <Link to="/agents">智能体</Link>
           <span>/</span>
-          <Link to="/robots/trader">交易员</Link>
+          <Link to="/agents/trader">交易员</Link>
           <span>/</span>
-          <Link to="/robots/trader/$strategyId" params={{ strategyId: strategyId ?? '' }}>
+          <Link to="/agents/trader/$strategyId" params={{ strategyId: strategyId ?? '' }}>
             {strategyId ?? '策略'}
           </Link>
           <span>/</span>

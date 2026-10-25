@@ -11,13 +11,13 @@ source_dir=""
 worktree_dir=""
 backend_src=""
 frontend_src=""
-robots_src=""
+agents_src=""
 config_src=""
 starter_src=""
 
 backend_rel="hub/backend"
 frontend_rel="hub/frontend"
-robots_rel="robots"
+agents_rel="agents"
 config_rel="config"
 scripts_rel="scripts"
 
@@ -72,7 +72,7 @@ prepare_source_dir() {
   source_dir="$worktree_dir"
   backend_src="$source_dir/$backend_rel"
   frontend_src="$source_dir/$frontend_rel"
-  robots_src="$source_dir/$robots_rel"
+  agents_src="$source_dir/$agents_rel"
   config_src="$source_dir/$config_rel"
   starter_src="$source_dir/$scripts_rel/starter.sh"
 }
@@ -118,8 +118,8 @@ verify_artifacts() {
     echo "Missing frontend build output: $frontend_src/dist/index.html" >&2
     exit 1
   fi
-  if [[ ! -d "$robots_src" ]]; then
-    echo "Missing robots directory: $robots_src" >&2
+  if [[ ! -d "$agents_src" ]]; then
+    echo "Missing agents directory: $agents_src" >&2
     exit 1
   fi
   if [[ ! -f "$config_src/hub.env.template" ]]; then
@@ -237,7 +237,7 @@ mkdir -p "$stage_dir/hub"
 
 cp -R "$backend_src" "$stage_dir/hub/"
 cp -R "$frontend_src" "$stage_dir/hub/"
-cp -R "$robots_src" "$stage_dir/"
+cp -R "$agents_src" "$stage_dir/"
 cp -R "$config_src" "$stage_dir/"
 cp -R "$source_dir/$scripts_rel" "$stage_dir/"
 

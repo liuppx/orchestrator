@@ -2,11 +2,11 @@
 
 > 版本：2026-03-18  
 > 仓库：`/home/administrator/code/hub`  
-> 重点对象：Python `control-plane`（Robot 控制面）+ OpenClaw 多实例编排
+> 重点对象：Python `control-plane`（Agent 控制面）+ OpenClaw 多实例编排
 
 ## 1. 战报结论（先看这 90 秒）
 
-Hub 当前已经形成一套可运行的“机器人控制平面”：
+Hub 当前已经形成一套可运行的“智能体控制平面”：
 
 - 一个 Python 进程统一提供 Web UI + API。
 - 一个实例 = 一套独立 OpenClaw profile + 独立端口 + 独立目录。
@@ -16,7 +16,7 @@ Hub 当前已经形成一套可运行的“机器人控制平面”：
 
 一句话定义本系统：
 
-**它不是“机器人本体”，而是“起机器人、管机器人、保机器人”的总控层。**
+**它不是“智能体本体”，而是“起智能体、管智能体、保智能体”的总控层。**
 
 ---
 
@@ -25,13 +25,13 @@ Hub 当前已经形成一套可运行的“机器人控制平面”：
 ### 2.1 设计目标
 
 1. 让新同学在一个页面内完成：登录、建实例、启动、配对、看日志、排障。
-2. 保证多机器人并行时的隔离性：配置隔离、运行隔离、目录隔离。
+2. 保证多智能体并行时的隔离性：配置隔离、运行隔离、目录隔离。
 3. 统一模型配置入口（Router + 默认模型 + allowlist）。
 4. 把“偶发断线”从人工盯盘升级为“可观测 + 可恢复”。
 
 ### 2.2 非目标（当前版本）
 
-1. 不负责机器人业务推理策略本身（那是 OpenClaw workspace/agents 的职责）。
+1. 不负责智能体业务推理策略本身（那是 OpenClaw workspace/agents 的职责）。
 2. 不负责 UCAN 在后端的强校验闭环（当前只存会话载荷，未验签）。
 3. 不提供关系型数据库高可用方案（当前使用文件状态）。
 
@@ -83,7 +83,7 @@ hub/
 │     ├─ src/                      # React 源码
 │     ├─ package.json
 │     └─ dist/                     # 前端构建产物（运行时/打包时生成）
-├─ robots/                         # 机器人定义与运行约定
+├─ agents/                         # 智能体定义与运行约定
 ├─ runtime/
 │  ├─ control-plane/state.json     # 实例状态持久化文件
 │  ├─ control-plane/logs/          # 控制平面日志
@@ -109,7 +109,7 @@ hub/
 
 1. 持久化状态：实例列表、模型配置、运行元数据，落到 `runtime/control-plane/state.json`。
 2. 运行时会话：控制面进程内的临时会话与诊断缓存。
-3. 机器人适配状态：不同机器人通过适配器接入控制面，而不是直接把业务逻辑写进控制面。
+3. 智能体适配状态：不同智能体通过适配器接入控制面，而不是直接把业务逻辑写进控制面。
 4. 外部连接：控制面通过 HTTP 调用 Router `/models` 等上游接口。
 
 ### 5.2 配置来源
@@ -173,24 +173,24 @@ stateDiagram-v2
 | POST | `/api/v1/public/auth/wallet/challenge` | 无 | 生成一次性钱包签名挑战 |
 | POST | `/api/v1/public/auth/wallet/verify` | 无 | 验签并写会话 Cookie |
 | POST | `/api/v1/public/auth/logout` | Cookie | 登出 |
-| GET | `/api/v1/public/robot/types` | Cookie | 可创建机器人类型 |
+| GET | `/api/v1/public/agent/types` | Cookie | 可创建智能体类型 |
 | GET | `/api/v1/public/router/models` | Cookie | 拉取 Router 模型列表 |
-| GET | `/api/v1/public/robots/{key}/summary` | Cookie | 读取机器人工作台摘要 |
-| GET | `/api/v1/public/robots/{key}/config` | Cookie | 读取机器人工作台配置视图 |
-| PUT | `/api/v1/public/robots/{key}/config` | Cookie | 更新机器人工作台配置 |
-| POST | `/api/v1/public/robots/{key}/actions/run-once` | Cookie | 触发机器人执行一次 |
-| POST | `/api/v1/public/robots/{key}/actions/start` | Cookie | 启动机器人常驻服务 |
-| POST | `/api/v1/public/robots/{key}/actions/stop` | Cookie | 停止机器人常驻服务 |
-| GET | `/api/v1/public/robot/instances` | Cookie | 列出实例 |
-| POST | `/api/v1/public/robot/instances` | Cookie | 创建实例 |
-| GET | `/api/v1/public/robot/instances/{id}` | Cookie | 读取实例 |
-| DELETE | `/api/v1/public/robot/instances/{id}` | Cookie | 删除实例（仅 owner，且需 stopped） |
-| PATCH | `/api/v1/public/robot/instances/{id}/model` | Cookie | 修改实例模型 |
-| POST | `/api/v1/public/robot/instances/{id}/start` | Cookie | 启动实例 |
-| POST | `/api/v1/public/robot/instances/{id}/stop` | Cookie | 停止实例 |
-| POST | `/api/v1/public/robot/instances/{id}/pair-whatsapp` | Cookie | 触发 WhatsApp 配对命令 |
-| GET | `/api/v1/public/robot/instances/{id}/logs` | Cookie | 读取日志 + QR + 配对状态 |
-| GET | `/api/v1/public/robot/instances/{id}/diagnose` | Cookie | 诊断实例，支持 auto recover |
+| GET | `/api/v1/public/agents/{key}/summary` | Cookie | 读取智能体工作台摘要 |
+| GET | `/api/v1/public/agents/{key}/config` | Cookie | 读取智能体工作台配置视图 |
+| PUT | `/api/v1/public/agents/{key}/config` | Cookie | 更新智能体工作台配置 |
+| POST | `/api/v1/public/agents/{key}/actions/run-once` | Cookie | 触发智能体执行一次 |
+| POST | `/api/v1/public/agents/{key}/actions/start` | Cookie | 启动智能体常驻服务 |
+| POST | `/api/v1/public/agents/{key}/actions/stop` | Cookie | 停止智能体常驻服务 |
+| GET | `/api/v1/public/agent/instances` | Cookie | 列出实例 |
+| POST | `/api/v1/public/agent/instances` | Cookie | 创建实例 |
+| GET | `/api/v1/public/agent/instances/{id}` | Cookie | 读取实例 |
+| DELETE | `/api/v1/public/agent/instances/{id}` | Cookie | 删除实例（仅 owner，且需 stopped） |
+| PATCH | `/api/v1/public/agent/instances/{id}/model` | Cookie | 修改实例模型 |
+| POST | `/api/v1/public/agent/instances/{id}/start` | Cookie | 启动实例 |
+| POST | `/api/v1/public/agent/instances/{id}/stop` | Cookie | 停止实例 |
+| POST | `/api/v1/public/agent/instances/{id}/pair-whatsapp` | Cookie | 触发 WhatsApp 配对命令 |
+| GET | `/api/v1/public/agent/instances/{id}/logs` | Cookie | 读取日志 + QR + 配对状态 |
+| GET | `/api/v1/public/agent/instances/{id}/diagnose` | Cookie | 诊断实例，支持 auto recover |
 
 ### 7.2 Admin（运营/控制）
 
@@ -236,11 +236,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[UI 创建实例] --> B[POST /public/robot/instances]
+    A[UI 创建实例] --> B[POST /public/agent/instances]
     B --> C[分配ID/profile/port/root_dir]
     C --> D[写 workspace 模板 AGENTS/SOUL/USER]
     D --> E[持久化 state.json]
-    E --> F[POST /public/robot/instances/{id}/start]
+    E --> F[POST /public/agent/instances/{id}/start]
     F --> G[configure_profile 写 openclaw profile]
     G --> H[openclaw gateway run]
     H --> I[pid/lock 检测成功]
@@ -415,7 +415,7 @@ flowchart TD
 ```text
 hub/backend/
 hub/frontend/
-robots/
+agents/
 config/hub.env.template
 scripts/
 VERSION / COMMIT / BUILD_SOURCE_BRANCH
@@ -427,7 +427,7 @@ VERSION / COMMIT / BUILD_SOURCE_BRANCH
 
 ```mermaid
 flowchart TD
-    A[用户说: 机器人不回] --> B{实例状态?}
+    A[用户说: 智能体不回] --> B{实例状态?}
     B -- stopped/error --> C[先 start 并看 gateway.log]
     B -- running --> D{pair_status?}
 
@@ -447,13 +447,13 @@ flowchart TD
 
 ---
 
-## 16. 为什么当前架构能支撑“多机器人并行”
+## 16. 为什么当前架构能支撑“多智能体并行”
 
 核心是“控制平面与执行平面解耦 + 实例隔离”：
 
 1. 控制平面统一收敛复杂性（API、状态机、排障、自愈）。
 2. 执行平面继续复用 OpenClaw 生态（channel/plugin/agent）。
-3. 新机器人类型接入，只需新增：
+3. 新智能体类型接入，只需新增：
    - `kind` 规范
    - `configure_profile` 分支
    - 前端创建表单字段
@@ -499,4 +499,4 @@ flowchart TD
 
 这套 Hub 控制平面，已经从“手工命令驱动”走到了“可视化编排 + 状态可观测 + 自动恢复”的工程化阶段。
 
-它最关键的价值不是某一条 API，而是把“起机器人、管机器人、救机器人”变成了**可以复制、可以培训、可以交付**的一条标准流水线。
+它最关键的价值不是某一条 API，而是把“起智能体、管智能体、救智能体”变成了**可以复制、可以培训、可以交付**的一条标准流水线。

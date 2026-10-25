@@ -1,0 +1,43 @@
+strategies:
+  - id: etf-breakout-demo
+    enabled: true
+    market: a-share
+    symbol: 510300.SH
+    name: CSI300 ETF Demo
+    timeframe: 1d
+    strategy: breakout
+    history_window: 20
+    breakout_lookback: 5
+    quantity: 100
+    max_position: 500
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.08
+    dry_run: true
+  - id: auction-wave-demo
+    enabled: false
+    market: a-share
+    symbol: 510300.SH
+    name: Auction Wave Demo
+    timeframe: 1m
+    strategy: auction_wave
+    history_window: 20
+    breakout_lookback: 10
+    quantity: 100
+    position_quantity: 200
+    max_position: 500
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.08
+    dry_run: true
+    enable_buy: false
+    lot_size: 100
+    active_lookback_days: 10
+    active_threshold_pct: 4.0
+    breakout_buffer_pct: 0.2
+    resistance_lookback_days: 20
+    resistance_buffer_pct: 1.0
+    auction_lock_time: "09:29"
+    auction_open_end_time: "09:35"
+    auction_zero_threshold_pct: 0.0
+    auction_strong_open_threshold_pct: 3.0
+    afternoon_exit_time: "14:30"
+    limit_up_threshold_pct: 9.8

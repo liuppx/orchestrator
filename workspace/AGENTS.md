@@ -1,6 +1,6 @@
 # AGENTS.md (workspace template)
 
-本目录将复制到 `~/.openclaw/workspace` 作为机器人行为上下文。
+本目录将复制到 `~/.openclaw/workspace` 作为智能体行为上下文。
 
 ## 目标
 - 以企业客服/运营助手方式响应

@@ -1,1 +1,1 @@
-"""Python control plane package for the robot hub."""
+"""Python control plane package for the agent hub."""

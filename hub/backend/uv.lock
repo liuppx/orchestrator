@@ -880,7 +880,7 @@ wheels = [
 ]
 
 [[package]]
-name = "robot-hub"
+name = "agent-hub"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

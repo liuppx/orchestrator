@@ -34,6 +34,103 @@ export type StrategyOption = {
   payload: Record<string, unknown>
 }
 
+export type TraderRunBatch = {
+  runId: string
+  startedAt: string | null
+  finishedAt: string | null
+  strategyCount: number
+  signalCount: number
+  orderPlanCount: number
+  orderCount: number
+  suppressedOrderCount: number
+  errorCount: number
+  summaryPath: string
+}
+
+export type TraderMarketObservation = {
+  candidateCount: number
+  tradePermission: string
+  gradeCounts: {
+    A: number
+    B: number
+    C: number
+  }
+  errorCount: number
+  payload: Record<string, unknown>
+}
+
+export type WatchlistCandidate = {
+  strategyId: string
+  symbol: string
+  name: string
+  grade: string
+  score: number
+  tradePermission: string
+  latestPrice: number | null
+  pctChange: number | null
+  signalAction: string
+  signalReason: string
+  riskOk: boolean | null
+  riskReason: string
+  reasons: string[]
+  riskFlags: string[]
+  payload: Record<string, unknown>
+}
+
+export type CandidateReviewSummary = {
+  reviewCount: number
+  positiveCount: number
+  failedCount: number
+  averageReturnPct: number | null
+  payload: Record<string, unknown>
+}
+
+export type OrderLedgerEntry = {
+  tradingDay: string
+  orderKey: string
+  strategyId: string
+  symbol: string
+  side: string
+  quantity: number
+  latestPrice: number | null
+  lifecycleStatus: string
+  guardActive: boolean
+  retryAllowed: boolean
+  orderFingerprint: string
+  brokerOrderStatus: string
+  brokerOrderId: string
+  brokerProvider: string
+  accepted: string
+  recordedAt: string | null
+  submittedAt: string | null
+  filledAt: string | null
+  unlockedAt: string | null
+  unlockReason: string
+  payload: Record<string, unknown>
+}
+
+export type TraderDiagnostics = {
+  ok: boolean
+  errors: string[]
+  warnings: string[]
+  brokerProvider: string
+  brokerSupported: boolean
+  brokerConfigured: boolean | null
+  dataProvider: string
+  dataBaseUrl: string
+  accessTokenConfigured: boolean
+  refreshTokenConfigured: boolean
+  strategyCount: number
+  enabledStrategyCount: number
+  disabledStrategyCount: number
+  runtimeDir: string
+  runtimeDirExists: boolean
+  strategyFile: string
+  envFileExists: boolean
+  stateFileExists: boolean
+  payload: Record<string, unknown>
+}
+
 export type TraderConfigForm = {
   broker: string
   id: string
@@ -56,6 +153,10 @@ export type TraderConfigForm = {
   active_threshold_pct: number
   breakout_buffer_pct: number
   resistance_buffer_pct: number
+  auction_lock_time: string
+  auction_open_end_time: string
+  auction_zero_threshold_pct: number
+  auction_strong_open_threshold_pct: number
   afternoon_exit_time: string
   limit_up_threshold_pct: number
 }
@@ -196,6 +297,171 @@ export function buildStrategyOptions(
   })
 }
 
+export function buildRunBatches(summary: { recent_runs?: Array<Record<string, unknown>> } | undefined): TraderRunBatch[] {
+  return (summary?.recent_runs ?? []).map((item, index) => ({
+    runId: pickText(item, ['run_id']) === '-' ? `run-${index}` : pickText(item, ['run_id']),
+    startedAt: pickText(item, ['run_started_at']) === '-' ? null : pickText(item, ['run_started_at']),
+    finishedAt: pickText(item, ['run_finished_at']) === '-' ? null : pickText(item, ['run_finished_at']),
+    strategyCount: asNumber(item.strategy_count, 0),
+    signalCount: asNumber(item.signal_count, 0),
+    orderPlanCount: asNumber(item.order_plan_count, 0),
+    orderCount: asNumber(item.order_count, 0),
+    suppressedOrderCount: asNumber(item.suppressed_order_count, 0),
+    errorCount: asNumber(item.error_count, 0),
+    summaryPath: pickText(item, ['summary_path']),
+  }))
+}
+
+export function buildMarketObservation(summary: { market_observation?: Record<string, unknown> } | undefined): TraderMarketObservation | null {
+  const observation = summary?.market_observation
+  if (!observation || !Object.keys(observation).length) {
+    return null
+  }
+  const gradeCounts = pickRecord(observation, 'grade_counts')
+  return {
+    candidateCount: asNumber(observation.candidate_count, 0),
+    tradePermission: pickText(observation, ['trade_permission']),
+    gradeCounts: {
+      A: asNumber(gradeCounts.A, 0),
+      B: asNumber(gradeCounts.B, 0),
+      C: asNumber(gradeCounts.C, 0),
+    },
+    errorCount: asNumber(observation.error_count, 0),
+    payload: observation,
+  }
+}
+
+export function buildWatchlistCandidates(summary: { watchlist_candidates?: Array<Record<string, unknown>> } | undefined): WatchlistCandidate[] {
+  return (summary?.watchlist_candidates ?? []).map((item) => ({
+    strategyId: pickText(item, ['strategy_id']),
+    symbol: pickText(item, ['symbol']),
+    name: pickText(item, ['name']),
+    grade: pickText(item, ['grade']),
+    score: asNumber(item.score, 0),
+    tradePermission: pickText(item, ['trade_permission']),
+    latestPrice: typeof item.latest_price === 'number' ? item.latest_price : null,
+    pctChange: typeof item.pct_change === 'number' ? item.pct_change : null,
+    signalAction: pickText(item, ['signal_action']),
+    signalReason: pickText(item, ['signal_reason']),
+    riskOk: typeof item.risk_ok === 'boolean' ? item.risk_ok : null,
+    riskReason: pickText(item, ['risk_reason']),
+    reasons: Array.isArray(item.reasons) ? item.reasons.map((value) => String(value)) : [],
+    riskFlags: Array.isArray(item.risk_flags) ? item.risk_flags.map((value) => String(value)) : [],
+    payload: item,
+  }))
+}
+
+export function buildCandidateReviewSummary(summary: { candidate_review?: Record<string, unknown> } | undefined): CandidateReviewSummary | null {
+  const review = summary?.candidate_review
+  if (!review || !Object.keys(review).length) {
+    return null
+  }
+  return {
+    reviewCount: asNumber(review.review_count, 0),
+    positiveCount: asNumber(review.positive_count, 0),
+    failedCount: asNumber(review.failed_count, 0),
+    averageReturnPct: typeof review.average_return_pct === 'number' ? review.average_return_pct : null,
+    payload: review,
+  }
+}
+
+export function buildOrderLedgerEntries(summary: { order_ledger_entries?: Array<Record<string, unknown>> } | undefined): OrderLedgerEntry[] {
+  return (summary?.order_ledger_entries ?? []).map((item, index) => ({
+    tradingDay: pickText(item, ['trading_day']) === '-' ? '-' : pickText(item, ['trading_day']),
+    orderKey: pickText(item, ['order_key']) === '-' ? `ledger-${index}` : pickText(item, ['order_key']),
+    strategyId: pickText(item, ['strategy_id']),
+    symbol: pickText(item, ['symbol']),
+    side: pickText(item, ['side']),
+    quantity: asNumber(item.quantity, 0),
+    latestPrice: typeof item.latest_price === 'number' ? item.latest_price : null,
+    lifecycleStatus: pickText(item, ['lifecycle_status']),
+    guardActive: asBoolean(item.guard_active, true),
+    retryAllowed: asBoolean(item.retry_allowed, false),
+    orderFingerprint: pickText(item, ['order_fingerprint']),
+    brokerOrderStatus: pickText(item, ['broker_order_status']),
+    brokerOrderId: pickText(item, ['broker_order_id']),
+    brokerProvider: pickText(item, ['broker_provider']),
+    accepted: pickText(item, ['accepted']),
+    recordedAt: pickText(item, ['recorded_at']) === '-' ? null : pickText(item, ['recorded_at']),
+    submittedAt: pickText(item, ['submitted_at']) === '-' ? null : pickText(item, ['submitted_at']),
+    filledAt: pickText(item, ['filled_at']) === '-' ? null : pickText(item, ['filled_at']),
+    unlockedAt: pickText(item, ['unlocked_at']) === '-' ? null : pickText(item, ['unlocked_at']),
+    unlockReason: pickText(item, ['unlock_reason']),
+    payload: item,
+  }))
+}
+
+export function buildOrderLedgerDetailFields(entry: OrderLedgerEntry): RecordDetailField[] {
+  return [
+    { label: '交易日', value: entry.tradingDay },
+    { label: '订单 Key', value: entry.orderKey },
+    { label: '策略 ID', value: entry.strategyId },
+    { label: '标的', value: entry.symbol },
+    { label: '方向', value: entry.side },
+    { label: '数量', value: String(entry.quantity) },
+    { label: '最新价', value: entry.latestPrice == null ? '-' : String(entry.latestPrice) },
+    { label: '生命周期', value: entry.lifecycleStatus },
+    { label: '防线状态', value: entry.guardActive ? '锁定' : '已解锁' },
+    { label: '允许重试', value: entry.retryAllowed ? '是' : '否' },
+    { label: '订单指纹', value: entry.orderFingerprint },
+    { label: '券商', value: entry.brokerProvider },
+    { label: '券商状态', value: entry.brokerOrderStatus },
+    { label: '券商订单号', value: entry.brokerOrderId },
+    { label: 'Accepted', value: entry.accepted },
+    { label: '记录时间', value: formatBrowserDateTime(entry.recordedAt) },
+    { label: '提交时间', value: formatBrowserDateTime(entry.submittedAt) },
+    { label: '成交时间', value: formatBrowserDateTime(entry.filledAt) },
+    { label: '解锁时间', value: formatBrowserDateTime(entry.unlockedAt) },
+    { label: '解锁原因', value: entry.unlockReason },
+  ]
+}
+
+function pickRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key]
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+function pickStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key]
+  return Array.isArray(value) ? value.map((item) => String(item)) : []
+}
+
+export function buildTraderDiagnostics(summary: { diagnostics?: Record<string, unknown> } | undefined): TraderDiagnostics | null {
+  const diagnostics = summary?.diagnostics
+  if (!diagnostics || typeof diagnostics !== 'object') {
+    return null
+  }
+  const config = pickRecord(diagnostics, 'config')
+  const dataSource = pickRecord(diagnostics, 'data_source')
+  const broker = pickRecord(diagnostics, 'broker')
+  const brokerStatus = pickRecord(broker, 'status')
+  const runtime = pickRecord(diagnostics, 'runtime')
+  const runtimeDir = pickRecord(runtime, 'runtime_dir')
+  const stateFile = pickRecord(runtime, 'state_file')
+  const strategies = pickRecord(diagnostics, 'strategies')
+  return {
+    ok: asBoolean(diagnostics.ok, false),
+    errors: pickStringArray(diagnostics, 'errors'),
+    warnings: pickStringArray(diagnostics, 'warnings'),
+    brokerProvider: pickText(broker, ['provider']),
+    brokerSupported: asBoolean(broker.supported, false),
+    brokerConfigured: typeof brokerStatus.configured === 'boolean' ? brokerStatus.configured : null,
+    dataProvider: pickText(dataSource, ['provider']),
+    dataBaseUrl: pickText(dataSource, ['base_url']),
+    accessTokenConfigured: asBoolean(dataSource.access_token_configured, false),
+    refreshTokenConfigured: asBoolean(dataSource.refresh_token_configured, false),
+    strategyCount: asNumber(strategies.count, 0),
+    enabledStrategyCount: asNumber(strategies.enabled_count, 0),
+    disabledStrategyCount: asNumber(strategies.disabled_count, 0),
+    runtimeDir: pickText(config, ['runtime_dir']),
+    runtimeDirExists: asBoolean(runtimeDir.exists, false),
+    strategyFile: pickText(config, ['strategy_file']),
+    envFileExists: asBoolean(config.env_file_exists, false),
+    stateFileExists: asBoolean(stateFile.exists, false),
+    payload: diagnostics,
+  }
+}
+
 export function buildConfigDefaults(
   summary: { broker?: string; strategies?: Array<Record<string, unknown>> } | undefined,
   strategyId?: string | null,
@@ -228,6 +494,12 @@ export function buildConfigDefaults(
     active_threshold_pct: asNumber(strategy.active_threshold_pct, 4),
     breakout_buffer_pct: asNumber(strategy.breakout_buffer_pct, 0.2),
     resistance_buffer_pct: asNumber(strategy.resistance_buffer_pct, 1),
+    auction_lock_time:
+      pickText(strategy, ['auction_lock_time']) === '-' ? '09:29' : pickText(strategy, ['auction_lock_time']),
+    auction_open_end_time:
+      pickText(strategy, ['auction_open_end_time']) === '-' ? '09:35' : pickText(strategy, ['auction_open_end_time']),
+    auction_zero_threshold_pct: asNumber(strategy.auction_zero_threshold_pct, 0),
+    auction_strong_open_threshold_pct: asNumber(strategy.auction_strong_open_threshold_pct, 3),
     afternoon_exit_time:
       pickText(strategy, ['afternoon_exit_time']) === '-' ? '14:30' : pickText(strategy, ['afternoon_exit_time']),
     limit_up_threshold_pct: asNumber(strategy.limit_up_threshold_pct, 9.8),
@@ -257,6 +529,10 @@ export function buildNewStrategyDefaults(broker: string): TraderConfigForm {
     active_threshold_pct: 4,
     breakout_buffer_pct: 0.2,
     resistance_buffer_pct: 1,
+    auction_lock_time: '09:29',
+    auction_open_end_time: '09:35',
+    auction_zero_threshold_pct: 0,
+    auction_strong_open_threshold_pct: 3,
     afternoon_exit_time: '14:30',
     limit_up_threshold_pct: 9.8,
   }
@@ -346,6 +622,12 @@ export function normalizeStrategyPayload(strategy: Record<string, unknown>, enab
     active_threshold_pct: asNumber(strategy.active_threshold_pct, 4),
     breakout_buffer_pct: asNumber(strategy.breakout_buffer_pct, 0.2),
     resistance_buffer_pct: asNumber(strategy.resistance_buffer_pct, 1),
+    auction_lock_time:
+      pickText(strategy, ['auction_lock_time']) === '-' ? '09:29' : pickText(strategy, ['auction_lock_time']),
+    auction_open_end_time:
+      pickText(strategy, ['auction_open_end_time']) === '-' ? '09:35' : pickText(strategy, ['auction_open_end_time']),
+    auction_zero_threshold_pct: asNumber(strategy.auction_zero_threshold_pct, 0),
+    auction_strong_open_threshold_pct: asNumber(strategy.auction_strong_open_threshold_pct, 3),
     afternoon_exit_time:
       pickText(strategy, ['afternoon_exit_time']) === '-' ? '14:30' : pickText(strategy, ['afternoon_exit_time']),
     limit_up_threshold_pct: asNumber(strategy.limit_up_threshold_pct, 9.8),

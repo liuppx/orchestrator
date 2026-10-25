@@ -93,9 +93,9 @@ start_command_desc() {
   if [[ -n "${HUB_CONTROL_PLANE_CMD:-}" ]]; then
     echo "$HUB_CONTROL_PLANE_CMD"
   elif command -v uv >/dev/null 2>&1; then
-    echo "uv run robot-hub (cwd=${HUB_PYTHON_APP_DIR})"
-  elif [[ -x "${HUB_PYTHON_APP_DIR}/.venv/bin/robot-hub" ]]; then
-    echo "${HUB_PYTHON_APP_DIR}/.venv/bin/robot-hub"
+    echo "uv run agent-hub (cwd=${HUB_PYTHON_APP_DIR})"
+  elif [[ -x "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub" ]]; then
+    echo "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub"
   else
     echo "[error] Python control plane not ready. Run scripts/bootstrap_full_stack.sh first." >&2
     exit 1
@@ -112,7 +112,7 @@ start_command_shell() {
       "$HUB_PYTHON_APP_DIR" \
       "$HUB_CONTROL_PLANE_CMD"
   elif command -v uv >/dev/null 2>&1; then
-    printf 'export HUB_REPO_ROOT=%q; export HUB_RUNTIME_DIR=%q; export HUB_INSTANCES_ROOT=%q; export HUB_BIND_ADDR=%q; cd %q && exec uv run robot-hub' \
+    printf 'export HUB_REPO_ROOT=%q; export HUB_RUNTIME_DIR=%q; export HUB_INSTANCES_ROOT=%q; export HUB_BIND_ADDR=%q; cd %q && exec uv run agent-hub' \
       "$HUB_REPO_ROOT" \
       "$HUB_RUNTIME_DIR" \
       "$HUB_INSTANCES_ROOT" \
@@ -124,7 +124,7 @@ start_command_shell() {
       "$HUB_RUNTIME_DIR" \
       "$HUB_INSTANCES_ROOT" \
       "$HUB_BIND_ADDR" \
-      "${HUB_PYTHON_APP_DIR}/.venv/bin/robot-hub"
+      "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub"
   fi
 }
 

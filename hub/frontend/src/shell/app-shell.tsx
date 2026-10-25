@@ -9,9 +9,9 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 
 const navItems = [
-  { to: '/robots', label: '机器人', icon: Bot },
-  { to: '/robots/trader', label: '交易员', icon: CandlestickChart },
-  { to: '/robots/messenger', label: '信使', icon: MessageSquareMore },
+  { to: '/agents', label: '智能体', icon: Bot },
+  { to: '/agents/trader', label: '交易员', icon: CandlestickChart },
+  { to: '/agents/messenger', label: '信使', icon: MessageSquareMore },
 ]
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -48,7 +48,7 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
             <div className="ml-3">
               <div className="text-sm font-semibold">Hub</div>
-              <div className="text-xs text-slate-500">Robot Control Plane</div>
+              <div className="text-xs text-slate-500">Agent Control Plane</div>
             </div>
           </div>
           <nav className="space-y-1 p-3">
@@ -75,7 +75,7 @@ export function AppShell({ children }: PropsWithChildren) {
         <main className="min-w-0">
           <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
             <div>
-              <div className="text-sm font-medium text-slate-900">机器人管理后台</div>
+              <div className="text-sm font-medium text-slate-900">智能体管理后台</div>
               <div className="text-xs text-slate-500">
                 {session.capability.protocol === 'ucan' ? 'Platform session: UCAN ready' : 'Platform session: cookie-wallet'}
               </div>

@@ -21,7 +21,7 @@ else
   echo "[warn] uv missing"
 fi
 
-if [[ -x "$ROOT_DIR/hub/backend/.venv/bin/robot-hub" ]]; then
+if [[ -x "$ROOT_DIR/hub/backend/.venv/bin/agent-hub" ]]; then
   echo "[ok] python hub executable ready"
 else
   echo "[warn] python hub executable missing; run scripts/bootstrap_full_stack.sh"
