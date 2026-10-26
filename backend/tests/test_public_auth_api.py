@@ -19,6 +19,7 @@ from eth_account.messages import encode_defunct
 
 from hub.app import create_app
 from hub.config import Settings
+from hub.db import init_database
 
 
 def _free_port() -> int:
@@ -37,9 +38,12 @@ class PublicAuthApiTest(unittest.TestCase):
         self.jar = None
         self.opener = None
 
-    def start_server(self, secure_mode: str, repo_root: Path | None = None) -> None:
+    def start_server(self, secure_mode: str, repo_root: Path | None = None, use_database: bool = False) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.repo_root = repo_root or Path(__file__).resolve().parents[2]
+        database_url = f"sqlite:///{Path(self.tmpdir.name) / 'control.db'}" if use_database else ""
+        if database_url:
+            init_database(database_url)
         self.port = _free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         env_values = {
@@ -50,7 +54,10 @@ class PublicAuthApiTest(unittest.TestCase):
             "HUB_PUBLIC_BASE_URL": "https://hub.example.com",
             "HUB_SESSION_COOKIE_SECURE_MODE": secure_mode,
             "HUB_INTERNAL_TOKEN": "test-internal-token",
+            "HUB_WORKER_TOKEN": "test-worker-token",
+            "HUB_DATABASE_URL": "",
         }
+        env_values["HUB_DATABASE_URL"] = database_url
         self.previous_env = {key: os.environ.get(key) for key in env_values}
         os.environ.update(env_values)
         self.settings = Settings(
@@ -420,6 +427,70 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         assert isinstance(created, dict)
         self.assertEqual(created["data"]["task"]["app_id"], "mcp")
+
+    def test_worker_claim_heartbeat_and_result_require_separate_worker_token(self) -> None:
+        self.start_server("never", use_database=True)
+        status, readiness, _ = self.request("/api/v1/public/ready")
+        self.assertEqual(status, 200)
+        self.assertEqual(readiness["storage"], "database")
+        project_headers = {
+            "Authorization": "Bearer test-internal-token",
+            "X-YeYing-Instance": "project-local",
+        }
+        status, created, _ = self.request(
+            "/api/v1/internal/project/agents/install",
+            method="POST",
+            payload={"app_id": "worker-test", "version": "1.0"},
+            headers=project_headers,
+        )
+        self.assertEqual(status, 200)
+        task_id = created["data"]["task"]["id"]
+
+        status, denied, _ = self.request(
+            "/api/v1/internal/tasks/claim",
+            method="POST",
+            payload={"limit": 1},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(denied["detail"], "invalid worker token")
+
+        worker_headers = {"Authorization": "Bearer test-worker-token", "X-Worker-ID": "node-local"}
+        status, claimed, _ = self.request("/api/v1/internal/tasks/claim", method="POST", payload={}, headers=worker_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(claimed["data"]["tasks"][0]["id"], task_id)
+        worker_headers["X-Worker-Attempt"] = str(claimed["data"]["tasks"][0]["attempts"])
+        status, released, _ = self.request(
+            f"/api/v1/internal/tasks/{task_id}/release",
+            method="POST",
+            payload={"reason": "worker_shutdown"},
+            headers=worker_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(released["data"]["task"]["status"], "pending")
+        status, claimed, _ = self.request("/api/v1/internal/tasks/claim", method="POST", payload={}, headers=worker_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(claimed["data"]["tasks"][0]["attempts"], 2)
+        worker_headers["X-Worker-Attempt"] = "2"
+        status, heartbeat, _ = self.request(
+            f"/api/v1/internal/tasks/{task_id}/heartbeat",
+            method="POST",
+            payload={"lease_seconds": 45},
+            headers=worker_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(heartbeat["data"]["task"]["status"], "running")
+        status, result, _ = self.request(
+            f"/api/v1/internal/tasks/{task_id}/result",
+            method="POST",
+            payload={"outcome": "succeeded", "result_code": "OK"},
+            headers=worker_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["data"]["task"]["status"], "succeeded")
+        status, installed, _ = self.request("/api/v1/internal/installed", headers=project_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(installed["data"][0]["status"], "installed")
 
 
 if __name__ == "__main__":

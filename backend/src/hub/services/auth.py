@@ -13,6 +13,8 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from eth_utils import to_checksum_address
 from fastapi import Request
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 
 from hub.config import Settings
 from hub.models import (
@@ -21,6 +23,7 @@ from hub.models import (
     AuthSessionView,
     AuthSessionVerifyRequest,
 )
+from hub.storage import ConsumedChallenge, sessions_for
 
 SESSION_COOKIE_NAME = "hub_session"
 
@@ -46,6 +49,7 @@ class AuthSessionService:
     nonce_store_path: Path
     public_base_url: str | None
     secure_cookie_mode: str
+    database_url: str | None = None
 
     def _sign(self, payload_text: str) -> str:
         digest = hmac.new(
@@ -246,12 +250,57 @@ class AuthSessionService:
         )
 
     def is_consumed(self, digest: str) -> bool:
+        if self.database_url:
+            with sessions_for(self.database_url)() as session:
+                session.execute(delete(ConsumedChallenge).where(ConsumedChallenge.expires_at <= _now_utc()))
+                session.commit()
+                row = session.get(ConsumedChallenge, digest)
+                if row is None:
+                    return False
+                expires_at = row.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if expires_at <= _now_utc():
+                    session.execute(delete(ConsumedChallenge).where(ConsumedChallenge.digest == digest))
+                    session.commit()
+                    return False
+                return True
         return digest in self.load_consumed()
 
     def mark_consumed(self, digest: str, expires_at_text: str | None) -> None:
+        if self.database_url:
+            expires_at = _parse_timestamp(expires_at_text) or _now_utc()
+            try:
+                with sessions_for(self.database_url).begin() as session:
+                    session.add(
+                        ConsumedChallenge(
+                            digest=digest,
+                            expires_at=expires_at,
+                            consumed_at=_now_utc(),
+                        )
+                    )
+            except IntegrityError as exc:
+                raise ValueError("challenge already used") from exc
+            return
         payload = self.load_consumed()
         payload[digest] = expires_at_text or _now_utc().isoformat()
         self.save_consumed(payload)
+
+    def import_consumed_json(self, payload: dict[str, str]) -> int:
+        if not self.database_url:
+            raise ValueError("database_url is required to import consumed challenges")
+        now = _now_utc()
+        imported = 0
+        with sessions_for(self.database_url).begin() as session:
+            for digest, expires_at_text in payload.items():
+                expires_at = _parse_timestamp(expires_at_text)
+                if not isinstance(digest, str) or expires_at is None or expires_at <= now:
+                    continue
+                if session.get(ConsumedChallenge, digest) is not None:
+                    continue
+                session.add(ConsumedChallenge(digest=digest, expires_at=expires_at, consumed_at=now))
+                imported += 1
+        return imported
 
     def current_session(self, request: Request) -> AuthSessionView | None:
         return self.decode_session(request.cookies.get(SESSION_COOKIE_NAME))
@@ -286,4 +335,15 @@ def auth_service(settings: Settings) -> AuthSessionService:
         nonce_store_path=settings.resolved_runtime_dir / "auth" / "consumed_challenges.json",
         public_base_url=settings.public_base_url,
         secure_cookie_mode=settings.session_cookie_secure_mode,
+        database_url=settings.database_url,
     )
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

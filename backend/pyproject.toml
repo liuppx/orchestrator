@@ -12,10 +12,18 @@ dependencies = [
   "pydantic-settings>=2.10.1,<3.0.0",
   "python-multipart>=0.0.20,<1.0.0",
   "pyyaml>=6.0.2,<7.0.0",
+  "cryptography>=45.0.0,<47.0.0",
+  "SQLAlchemy>=2.0.41,<3.0.0",
+  "alembic>=1.16.2,<2.0.0",
+  "psycopg[binary]>=3.2.9,<4.0.0",
 ]
 
 [project.scripts]
 agent-hub = "hub.app:main"
+orchestrator-import-runtime-json = "hub.migrate_runtime_json:main"
+orchestrator-init-db = "hub.init_db:main"
+orchestrator-outbox-worker = "hub.outbox_worker:main"
+orchestrator-runtime-worker = "hub.lifecycle_worker:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

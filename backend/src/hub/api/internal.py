@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from hub.config import Settings
@@ -9,7 +11,7 @@ router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
 
 
 def runtime_state(settings: Settings) -> AgentRuntimeState:
-    return AgentRuntimeState(settings.resolved_runtime_dir)
+    return AgentRuntimeState(settings.resolved_runtime_dir, settings.database_url)
 
 
 def require_internal_token(
@@ -28,8 +30,30 @@ def require_internal_token(
     elif legacy_token:
         provided = legacy_token.strip()
 
-    if provided != expected:
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="invalid internal token")
+
+
+def require_worker_token(settings: Settings, authorization: str | None) -> None:
+    expected = settings.worker_token.strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="worker token is not configured")
+    provided = authorization[len("Bearer ") :].strip() if authorization and authorization.startswith("Bearer ") else ""
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="invalid worker token")
+
+
+def require_worker_attempt(value: int | None) -> int:
+    if value is None or value < 1:
+        raise HTTPException(status_code=400, detail="X-Worker-Attempt is required")
+    return value
+
+
+def bounded_payload_int(payload: dict, name: str, default: int) -> int:
+    try:
+        return int(payload.get(name, default))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer") from exc
 
 
 async def request_payload(request: Request) -> dict:
@@ -51,7 +75,7 @@ async def handle_lifecycle(action: str, request: Request, x_yeying_instance: str
     state = runtime_state(settings)
     payload = await request_payload(request)
     try:
-        task = state.create_task(action, payload, x_yeying_instance)
+        task = state.create_task(action, payload, x_yeying_instance, request.headers.get("x-request-id"))
     except ValueError as exc:
         return {"code": 400, "message": str(exc), "data": {}}
     return ok({"task": task})
@@ -61,10 +85,125 @@ async def handle_lifecycle(action: str, request: Request, x_yeying_instance: str
 async def internal_installed(
     authorization: str | None = Header(default=None),
     token: str | None = Header(default=None),
+    x_yeying_instance: str | None = Header(default=None),
 ) -> dict:
     settings = Settings()
     require_internal_token(settings, authorization, token)
-    return ok(runtime_state(settings).installed())
+    return ok(runtime_state(settings).installed(x_yeying_instance))
+
+
+@router.get("/tasks/{task_id}")
+async def internal_task(
+    task_id: str,
+    authorization: str | None = Header(default=None),
+    token: str | None = Header(default=None),
+    x_yeying_instance: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_internal_token(settings, authorization, token)
+    task = runtime_state(settings).get_task(task_id)
+    if task is None or task.get("owner_id", task.get("instance_id", "project")) != str(x_yeying_instance or "project"):
+        raise HTTPException(status_code=404, detail="task not found")
+    return ok({"task": task})
+
+
+@router.post("/tasks/claim")
+async def internal_claim_tasks(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    payload = await request_payload(request)
+    worker_id = str(x_worker_id or "").strip()
+    try:
+        tasks = runtime_state(settings).claim_tasks(
+            worker_id,
+            limit=bounded_payload_int(payload, "limit", 1),
+            lease_seconds=bounded_payload_int(payload, "lease_seconds", 60),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ok({"tasks": tasks})
+
+
+@router.post("/tasks/{task_id}/heartbeat")
+async def internal_task_heartbeat(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+    x_worker_attempt: int | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    payload = await request_payload(request)
+    try:
+        task = runtime_state(settings).heartbeat_task(
+            task_id,
+            str(x_worker_id or ""),
+            require_worker_attempt(x_worker_attempt),
+            bounded_payload_int(payload, "lease_seconds", 60),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if "lease" in str(exc) else 404, detail=str(exc)) from exc
+    return ok({"task": task})
+
+
+@router.post("/tasks/{task_id}/release")
+async def internal_task_release(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+    x_worker_attempt: int | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    payload = await request_payload(request)
+    try:
+        task = runtime_state(settings).release_task(
+            task_id,
+            str(x_worker_id or ""),
+            require_worker_attempt(x_worker_attempt),
+            payload.get("reason"),
+            retry_delay_seconds=bounded_payload_int(payload, "retry_delay_seconds", 0),
+            request_id=request.headers.get("x-request-id"),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 409 if "lease" in message or "owned" in message else 404 if "not found" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    return ok({"task": task})
+
+
+@router.post("/tasks/{task_id}/result")
+async def internal_task_result(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+    x_worker_attempt: int | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    payload = await request_payload(request)
+    try:
+        task = runtime_state(settings).finish_task(
+            task_id,
+            str(x_worker_id or ""),
+            require_worker_attempt(x_worker_attempt),
+            str(payload.get("outcome") or ""),
+            result_code=payload.get("result_code"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            request_id=request.headers.get("x-request-id"),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 409 if "lease" in message or "owned" in message else 404 if "not found" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    return ok({"task": task})
 
 
 @router.post("/install")
@@ -113,7 +252,7 @@ async def internal_hook(
 ) -> dict:
     settings = Settings()
     require_internal_token(settings, authorization, token)
-    event = runtime_state(settings).record_hook(action, await request_payload(request), x_yeying_instance)
+    event = runtime_state(settings).record_hook(action, await request_payload(request), x_yeying_instance, request.headers.get("x-request-id"))
     return ok({"event": event})
 
 
@@ -121,10 +260,11 @@ async def internal_hook(
 async def internal_project_agents(
     authorization: str | None = Header(default=None),
     token: str | None = Header(default=None),
+    x_yeying_instance: str | None = Header(default=None),
 ) -> dict:
     settings = Settings()
     require_internal_token(settings, authorization, token)
-    return ok(runtime_state(settings).installed())
+    return ok(runtime_state(settings).installed(x_yeying_instance))
 
 
 @router.post("/project/agents/install")
@@ -173,5 +313,5 @@ async def internal_project_hook(
 ) -> dict:
     settings = Settings()
     require_internal_token(settings, authorization, token)
-    event = runtime_state(settings).record_hook(action, await request_payload(request), x_yeying_instance)
+    event = runtime_state(settings).record_hook(action, await request_payload(request), x_yeying_instance, request.headers.get("x-request-id"))
     return ok({"event": event})

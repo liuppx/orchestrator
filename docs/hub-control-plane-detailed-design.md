@@ -192,11 +192,11 @@ stateDiagram-v2
 
 ### 7.2 Admin（运营/控制）
 
-当前默认 Python 控制面以 `public` 路由为主，`admin/internal` 作为后续扩展位保留，不把未实现接口写成现状承诺。
+当前尚无独立的 Admin API。生产运维通过受控主机、数据库迁移和 `scripts/starter.sh` 完成；不要把 `HUB_ADMIN_TOKEN` 视为已有 Admin 路由。
 
-### 7.3 Internal（内部探针）
+### 7.3 Internal（Project 与 Worker）
 
-当前保留扩展位，不作为默认生产能力对外承诺。
+Python 控制面已提供 Project 生命周期兼容入口及 Agent-native 路由，均使用独立的 `HUB_INTERNAL_TOKEN`。PostgreSQL 模式还提供 `HUB_WORKER_TOKEN` 保护的任务 claim、heartbeat、release 和 result 路由；worker 请求使用 `X-Worker-ID` 与 claim 返回的 attempt generation 做租约 fencing。具体路由、请求字段和执行边界见 [`agent-runtime-design.md`](agent-runtime-design.md)。
 
 ---
 
@@ -237,7 +237,7 @@ flowchart TD
     A[UI 创建实例] --> B[POST /public/agent/instances]
     B --> C[分配ID/profile/port/root_dir]
     C --> D[写 workspace 模板 AGENTS/SOUL/USER]
-    D --> E[持久化 state.json]
+    D --> E[持久化 PostgreSQL；未配置数据库时使用 state.json]
     E --> F[POST /public/agent/instances/{id}/start]
     F --> G[configure_profile 写 openclaw profile]
     G --> H[openclaw gateway run]
@@ -330,16 +330,13 @@ flowchart TD
 
 ### 11.1 当前存储策略
 
-- **无外部数据库**。
-- 实例元数据持久化到：`runtime/control-plane/state.json`。
-- 运行日志持久化到：`runtime/instances/<id>/logs/*`。
+- 配置 `HUB_DATABASE_URL` 时，实例注册表、实例配置版本、Project Agent 的 installed/task/hook、challenge 消费摘要和 outbox 元数据写入 PostgreSQL。
+- 未配置数据库时，实例元数据仍兼容持久化到 `runtime/control-plane/state.json`；Project Agent 状态使用 `runtime/control-plane/project-agents/state.json`。这条路径只适合本地单进程开发。
+- OpenClaw profile、workspace、运行日志和配对文件仍在绑定节点的 `runtime/instances/<id>/` 及仓库外 profile 目录中，不把进程文件或大日志正文写进 PostgreSQL。
 
 ### 11.2 迁移（migration）现状
 
-当前没有独立 migration 框架。
-
-- 结构演进依赖 Rust `serde` 反序列化兼容性。
-- 若字段演进复杂，建议引入版本号并加启动时迁移器（v1->v2）。
+数据库模式已有 Alembic 版本化 migration（当前 head 为 `0005_task_retry_schedule`）。启动生产服务前执行 `cd backend && uv run alembic upgrade head`；JSON 到数据库使用 `orchestrator-import-runtime-json`，迁移前停写、备份并校验，不做长期 dual-write。结构变更必须新增 migration，不能修改已应用版本。完整切换和回滚边界见 `docs/runtime-data.md`。
 
 ---
 
@@ -361,14 +358,14 @@ flowchart TD
 ### 12.2 当前安全边界
 
 1. `ROUTER_API_KEY` 由服务端环境注入，不下发到浏览器。
-2. 钱包会话用 `HttpOnly` Cookie，降低 XSS 窃取概率。
-3. Admin / Internal 接口采用独立 token。
+2. 钱包会话是 HMAC 签名的 `HttpOnly` Cookie；服务端不保存 session 行，登出或吊销单个 session 需要等待过期或轮换签名密钥。challenge 防重放摘要在 PostgreSQL 模式写数据库，在兼容模式写本地文件。
+3. Internal Project 与 Worker API 使用分离的 token；当前没有独立 Admin API。
 
 ### 12.3 已知风险
 
-1. 钱包 UCAN 载荷当前仅存储，未做后端验签。
-2. DingTalk 密钥保存在实例状态文件（需后续加密）。
-3. Session 是内存态，服务重启后用户需重新登录。
+1. 钱包 UCAN 载荷当前仅透传，未做后端验签。
+2. DingTalk client secret 不写入实例 JSON 或 PostgreSQL 正文，改存节点本地权限受限文件并在数据库中保存引用；OpenClaw profile 仍需明文凭证才能连接渠道，外部 Secret Manager/KMS 和轮换流程尚未完成。
+3. Cookie session 是无状态签名 token，服务重启后仍可用至过期；需妥善管理 `HUB_SESSION_SECRET`，当前没有单 session 服务端吊销列表。
 
 ---
 
@@ -465,18 +462,18 @@ flowchart TD
 
 ### 17.1 已知边界
 
-1. 后端单文件 `main.rs` 体量较大（维护成本逐步增高）。
-2. 会话与 heal 标记仅内存存储。
-3. UCAN 只透传，未验签。
-4. 缺少统一 metrics（Prometheus）与告警出口。
+1. 部分运行状态仍由本机 profile、workspace 和进程文件承载，数据库模式目前是单节点控制面，不提供跨节点调度与 reconcile。
+2. UCAN 只透传，未验签；无状态 session 不能单独吊销。
+3. 缺少统一 metrics（Prometheus）与告警出口。
+4. 应用生命周期 worker 已有首期受限执行闭环，但真实 Node 联调、多租户端口/路由、外部密钥管理、备份恢复和生产告警仍未完成。
 
 ### 17.2 建议演进（按优先级）
 
-1. **P0**：把 `main.rs` 拆成模块（api/service/infra/domain）。
-2. **P0**：引入结构化 metrics + hub。
-3. **P1**：UCAN 服务端验签闭环。
-4. **P1**：敏感字段（如 DingTalk secret）加密落盘。
-5. **P2**：状态存储切换 SQLite/Postgres，补 migration。
+1. **P0**：补统一 metrics、worker 队列/部署失败告警与容量监控。
+2. **P0**：完成真实 Node 凭证联调、发布者 key 轮换与部署回滚演练。
+3. **P1**：完成 UCAN 服务端验签和 session 吊销策略。
+4. **P1**：接入外部 Secret Manager/KMS，定义渠道和应用凭证轮换流程。
+5. **P1**：完善节点端口预留、租户路由、备份恢复与多节点 reconcile；持久化边界见 `docs/runtime-data.md`。
 
 ---
 

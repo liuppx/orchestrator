@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import copy
+import hashlib
 import os
 import re
 import shutil
@@ -13,6 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from sqlalchemy import select, delete
+from sqlalchemy.exc import IntegrityError
+
+from hub.storage import (
+    AgentInstance,
+    InstanceConfig,
+    RuntimeNode,
+    sessions_for,
+)
 
 from hub.models import (
     BotInstanceActionResponse,
@@ -71,6 +83,9 @@ class MessengerRuntimeConfig:
     port_range_start: int
     port_range_end: int
     openclaw_prefix: str | None = None
+    database_url: str | None = None
+    secret_store_dir: Path | None = None
+    node_id: str = "local"
 
 
 class MessengerStateService:
@@ -80,6 +95,9 @@ class MessengerStateService:
     def ensure_runtime(self) -> None:
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.instances_root.mkdir(parents=True, exist_ok=True)
+        if self.cfg.database_url:
+            self._secret_root().mkdir(parents=True, exist_ok=True, mode=0o700)
+            return
         if not self.cfg.state_file.exists():
             self.persist_db(
                 {
@@ -90,6 +108,8 @@ class MessengerStateService:
 
     def read_db(self) -> dict[str, Any]:
         self.ensure_runtime()
+        if self.cfg.database_url:
+            return self._read_database()
         try:
             loaded = json.loads(self.cfg.state_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -106,18 +126,272 @@ class MessengerStateService:
             loaded["instances"] = {}
         if not loaded.get("default_model"):
             loaded["default_model"] = self.cfg.default_model
+        migrated_secret = False
+        for instance_id, raw in loaded["instances"].items():
+            if isinstance(raw, dict) and raw.get("dingtalk_client_secret"):
+                secret_ref = self._store_secret(instance_id, raw["dingtalk_client_secret"])
+                raw.pop("dingtalk_client_secret", None)
+                raw["dingtalk_client_secret_ref"] = secret_ref
+                migrated_secret = True
+            if isinstance(raw, dict) and raw.get("dingtalk_client_secret_ref"):
+                raw["dingtalk_client_secret"] = self._read_secret(instance_id, raw["dingtalk_client_secret_ref"])
+        if migrated_secret:
+            self.persist_db(loaded)
         return loaded
 
     def persist_db(self, data: dict[str, Any]) -> None:
         self.ensure_runtime_dirs_only()
+        if self.cfg.database_url:
+            self._persist_database(data)
+            return
+        stored = copy.deepcopy(data)
+        for instance_id, raw in stored.get("instances", {}).items():
+            if isinstance(raw, dict) and raw.get("dingtalk_client_secret"):
+                secret_ref = self._store_secret(instance_id, raw.pop("dingtalk_client_secret"))
+                raw["dingtalk_client_secret_ref"] = secret_ref
         self.cfg.state_file.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(stored, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
     def ensure_runtime_dirs_only(self) -> None:
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.instances_root.mkdir(parents=True, exist_ok=True)
+
+    def _secret_root(self) -> Path:
+        return self.cfg.secret_store_dir or (self.cfg.runtime_dir / "secrets")
+
+    @staticmethod
+    def _secret_filename(instance_id: str) -> str:
+        return hashlib.sha256(instance_id.encode("utf-8")).hexdigest()
+
+    def _secret_ref(self, instance_id: str, secret: str) -> str:
+        secret_digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+        version = hashlib.sha256(f"{instance_id}:{secret_digest}".encode("utf-8")).hexdigest()
+        return f"local-secret://dingtalk-client-secret/{version}"
+
+    def _store_secret(self, instance_id: str, secret: Any) -> str | None:
+        if not secret:
+            return None
+        secret_root = self._secret_root()
+        secret_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            secret_root.chmod(0o700)
+        except OSError:
+            pass
+        secret_text = str(secret)
+        secret_ref = self._secret_ref(instance_id, secret_text)
+        target = secret_root / secret_ref.rsplit("/", 1)[-1]
+        if target.exists():
+            return secret_ref
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(secret_text, encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(target)
+        return secret_ref
+
+    def _read_secret(self, instance_id: str, secret_ref: str | None) -> str | None:
+        prefix = "local-secret://dingtalk-client-secret/"
+        if not secret_ref or not secret_ref.startswith(prefix):
+            return None
+        filename = secret_ref[len(prefix) :]
+        legacy_ref = self._secret_filename(instance_id)
+        if filename == legacy_ref:
+            path = self._secret_root() / filename
+        elif len(filename) == 64 and all(char in "0123456789abcdef" for char in filename):
+            path = self._secret_root() / filename
+        else:
+            return None
+        try:
+            secret = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if filename != legacy_ref and self._secret_ref(instance_id, secret) != secret_ref:
+            return None
+        return secret
+
+    @staticmethod
+    def _as_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        text = str(value or now_rfc3339())
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return datetime.now(timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def _read_database(self) -> dict[str, Any]:
+        assert self.cfg.database_url
+        with sessions_for(self.cfg.database_url)() as session:
+            rows = session.scalars(select(AgentInstance).order_by(AgentInstance.created_at.desc())).all()
+            instances: dict[str, dict[str, Any]] = {}
+            snapshots: dict[str, Any] = {}
+            for row in rows:
+                raw = dict(row.config_json or {})
+                raw.update(
+                    {
+                        "id": row.id,
+                        "kind": row.kind,
+                        "name": row.name,
+                        "owner_wallet": row.owner_id,
+                        "profile": row.profile_ref,
+                        "root_dir": raw.get("root_dir") or row.workspace_ref.removesuffix("/workspace"),
+                        "logs_dir": raw.get("logs_dir") or str(Path(row.workspace_ref).parent / "logs"),
+                        "port": row.port,
+                        "status": row.observed_state,
+                        "pid": row.pid,
+                        "last_error": row.last_error,
+                        "created_at": row.created_at.isoformat(),
+                        "updated_at": row.updated_at.isoformat(),
+                        "dingtalk_client_secret_ref": raw.get("dingtalk_client_secret_ref"),
+                    }
+                )
+                secret = self._read_secret(row.id, raw.get("dingtalk_client_secret_ref"))
+                if secret:
+                    raw["dingtalk_client_secret"] = secret
+                instances[row.id] = raw
+                snapshots[row.id] = {"revision": row.revision, "raw": copy.deepcopy(raw)}
+            return {
+                "default_model": self.cfg.default_model,
+                "instances": instances,
+                "_storage_snapshot": snapshots,
+            }
+
+    def _persist_database(self, data: dict[str, Any]) -> None:
+        assert self.cfg.database_url
+        instances = data.get("instances", {})
+        if not isinstance(instances, dict):
+            raise ValueError("instances must be an object")
+        snapshots = data.get("_storage_snapshot", {})
+        now = datetime.now(timezone.utc)
+        sessions = sessions_for(self.cfg.database_url)
+        persisted_snapshots: dict[str, dict[str, Any]] = {}
+        deleted_ids: list[str] = []
+        try:
+            with sessions.begin() as session:
+                node = session.get(RuntimeNode, self.cfg.node_id)
+                if node is None:
+                    node = RuntimeNode(
+                        id=self.cfg.node_id,
+                        node_key=self.cfg.node_id,
+                        status="online",
+                        capacity={},
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(node)
+                    session.flush()
+                else:
+                    node.status = "online"
+                    node.last_seen_at = now
+                    node.updated_at = now
+
+                for instance_id, snapshot in snapshots.items():
+                    if instance_id not in instances:
+                        result = session.execute(
+                            delete(AgentInstance).where(
+                                AgentInstance.id == instance_id,
+                                AgentInstance.revision == snapshot["revision"],
+                            )
+                        )
+                        if result.rowcount != 1:
+                            raise RuntimeError(f"instance changed concurrently: {instance_id}")
+                        deleted_ids.append(instance_id)
+
+                for instance_id, original in instances.items():
+                    if not isinstance(original, dict):
+                        continue
+                    previous = snapshots.get(instance_id)
+                    raw = copy.deepcopy(original)
+                    secret = raw.pop("dingtalk_client_secret", None)
+                    if secret:
+                        raw["dingtalk_client_secret_ref"] = self._store_secret(instance_id, secret)
+                        original["dingtalk_client_secret_ref"] = raw["dingtalk_client_secret_ref"]
+                    if previous:
+                        previous_raw = copy.deepcopy(previous["raw"])
+                        previous_raw.pop("dingtalk_client_secret", None)
+                        if raw == previous_raw:
+                            continue
+
+                    created_at = self._as_datetime(raw.get("created_at"))
+                    updated_at = self._as_datetime(raw.get("updated_at"))
+                    root_dir = str(raw.get("root_dir", ""))
+                    safe_config = {
+                        key: value
+                        for key, value in raw.items()
+                        if key not in {"dingtalk_client_secret", "_revision"}
+                    }
+                    revision = int(previous["revision"] + 1) if previous else 1
+                    if previous:
+                        result = session.execute(
+                            select(AgentInstance).where(
+                                AgentInstance.id == instance_id,
+                                AgentInstance.revision == previous["revision"],
+                            ).with_for_update()
+                        )
+                        row = result.scalar_one_or_none()
+                        if row is None:
+                            raise RuntimeError(f"instance changed concurrently: {instance_id}")
+                        row.owner_id = str(raw.get("owner_wallet", "guest"))
+                        row.node_id = self.cfg.node_id
+                        row.runtime_type = "openclaw"
+                        row.profile_ref = str(raw.get("profile", ""))
+                        row.workspace_ref = str(Path(root_dir) / "workspace")
+                        row.kind = str(raw.get("kind", "agent"))
+                        row.name = str(raw.get("name", ""))
+                        row.port = int(raw.get("port", 0) or 0)
+                        row.desired_state = str(raw.get("status", "unknown"))
+                        row.observed_state = str(raw.get("status", "unknown"))
+                        row.revision = revision
+                        row.config_json = safe_config
+                        row.pid = int(raw["pid"]) if raw.get("pid") is not None else None
+                        row.last_error = raw.get("last_error")
+                        row.updated_at = updated_at
+                    else:
+                        row = AgentInstance(
+                            id=instance_id,
+                            owner_id=str(raw.get("owner_wallet", "guest")),
+                            node_id=self.cfg.node_id,
+                            runtime_type="openclaw",
+                            profile_ref=str(raw.get("profile", "")),
+                            workspace_ref=str(Path(root_dir) / "workspace"),
+                            kind=str(raw.get("kind", "agent")),
+                            name=str(raw.get("name", "")),
+                            port=int(raw.get("port", 0) or 0),
+                            desired_state=str(raw.get("status", "unknown")),
+                            observed_state=str(raw.get("status", "unknown")),
+                            revision=revision,
+                            config_json=safe_config,
+                            pid=int(raw["pid"]) if raw.get("pid") is not None else None,
+                            last_error=raw.get("last_error"),
+                            created_at=created_at,
+                            updated_at=updated_at,
+                        )
+                        session.add(row)
+                    session.flush()
+                    refs = {}
+                    if raw.get("dingtalk_client_secret_ref"):
+                        refs["dingtalk_client_secret"] = raw["dingtalk_client_secret_ref"]
+                    session.merge(
+                        InstanceConfig(
+                            instance_id=instance_id,
+                            revision=revision,
+                            config_json=safe_config,
+                            secret_refs=refs,
+                            created_at=updated_at,
+                        )
+                    )
+                    persisted_snapshots[instance_id] = {
+                        "revision": revision,
+                        "raw": copy.deepcopy(original),
+                    }
+        except IntegrityError as exc:
+            raise RuntimeError("database constraint conflict while saving instance state") from exc
+        snapshots.update(persisted_snapshots)
+        for instance_id in deleted_ids:
+            snapshots.pop(instance_id, None)
 
     @staticmethod
     def _view_from_raw(instance_id: str, raw: dict[str, Any]) -> BotInstanceView:
@@ -639,6 +913,8 @@ class MessengerStateService:
                 ]
             )
         elif raw["kind"] == "dingtalk":
+            if not raw.get("dingtalk_client_secret"):
+                raise RuntimeError("DingTalk client secret is unavailable from the configured local secret store")
             plugin_list = self.run_shell("openclaw plugins list || true")
             if "dingtalk" not in plugin_list:
                 raise RuntimeError(

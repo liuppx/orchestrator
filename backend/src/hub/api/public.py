@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi import Query
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from hub.adapters import AgentWorkspaceAdapter, get_agent_workspace_adapter
 from hub.config import Settings
+from hub.storage import engine_for
 from hub.models import (
     AuthChallengeRequest,
     AuthChallengeView,
@@ -88,9 +91,24 @@ def messenger_service(settings: Settings) -> MessengerStateService:
             port_range_start=settings.instance_port_start,
             port_range_end=settings.instance_port_end,
             openclaw_prefix=settings.openclaw_prefix,
+            database_url=settings.database_url,
+            secret_store_dir=settings.secret_store_dir or (settings.resolved_runtime_dir / "secrets"),
+            node_id=settings.node_id,
         )
     )
 def workspace_adapter_for_agent(settings: Settings, agent_key: str) -> AgentWorkspaceAdapter:
+    if agent_key == "messenger":
+        from hub.adapters.messenger import MessengerWorkspaceAdapter
+
+        return MessengerWorkspaceAdapter(
+            settings.repo_root / "agents" / "custom" / "messenger",
+            settings.repo_root,
+            runtime_dir=settings.resolved_runtime_dir,
+            instances_root=settings.resolved_instances_root,
+            database_url=settings.database_url,
+            secret_store_dir=settings.secret_store_dir,
+            node_id=settings.node_id,
+        )
     adapter = get_agent_workspace_adapter(settings.repo_root, agent_key)
     if adapter is None:
         raise HTTPException(status_code=404, detail="agent capability not found")
@@ -100,6 +118,20 @@ def workspace_adapter_for_agent(settings: Settings, agent_key: str) -> AgentWork
 @router.get("/health", response_model=HealthResponse)
 async def public_health() -> HealthResponse:
     return HealthResponse()
+
+
+@router.get("/ready")
+async def public_readiness() -> dict[str, object]:
+    settings = Settings()
+    if not settings.database_url:
+        return {"ok": True, "storage": "json"}
+    try:
+        with engine_for(settings.database_url).connect() as connection:
+            connection.execute(text("SELECT 1"))
+            schema_version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="database unavailable or schema not migrated") from exc
+    return {"ok": True, "storage": "database", "schema_version": schema_version}
 
 
 @router.get("/version", response_model=VersionResponse)

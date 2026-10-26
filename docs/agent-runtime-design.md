@@ -22,6 +22,17 @@ Authorization: Bearer <HUB_INTERNAL_TOKEN>
 X-YeYing-Instance: project
 ```
 
+创建任务后 Project 使用 `GET /api/v1/internal/tasks/{task_id}` 查询本 Project 的任务状态。节点执行器使用独立的 `HUB_WORKER_TOKEN`，与 Project internal token 分离：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/api/v1/internal/tasks/claim` | 使用 `X-Worker-ID` 原子领取任务，可传 `limit` 和 `lease_seconds` |
+| POST | `/api/v1/internal/tasks/{task_id}/heartbeat` | 同一 `X-Worker-ID` 延长持有中的租约 |
+| POST | `/api/v1/internal/tasks/{task_id}/release` | worker 退出或暂不能执行时归还 pending 队列 |
+| POST | `/api/v1/internal/tasks/{task_id}/result` | 持有者提交 succeeded/failed 结果并更新 installed 镜像 |
+
+worker 心跳、释放和结果必须同时携带当前 `X-Worker-ID` 与 claim 返回的 `attempts`（作为 `X-Worker-Attempt`）；租约过期或 generation 不匹配时旧 worker 的写入会被拒绝。`HUB_WORKER_TOKEN` 未配置时这些路由返回 503。
+
 兼容入口：
 
 | 方法 | 路径 | 用途 |
@@ -48,32 +59,44 @@ Agent-native 入口：
 {"code": 200, "message": "success", "data": {}}
 ```
 
-## 3. Agent 本地状态
+## 3. Agent 状态存储边界
 
-当前 Agent Runtime 使用本地状态文件作为最小闭环：
+配置 `HUB_DATABASE_URL` 时，Agent Runtime 将 installed/task/hook 状态写入 PostgreSQL；不配置时保留本地 JSON 兼容模式：
 
 ```text
 runtime/control-plane/project-agents/state.json
 ```
 
-该文件记录：
+JSON 文件模式下，该文件记录：
 
 - `installed`：Project 视角的已安装能力镜像。
 - `tasks`：安装、升级、卸载任务。
 - `hooks`：Project 用户生命周期事件。
 
-这不是最终的任务调度实现，只是协议先行的最小可运行状态。后续可以替换为 SQLite 或受控任务队列，但对 Project 的 API 结构保持稳定。
+线上 PostgreSQL 模式下，任务领取、状态转换、租约、幂等和 retry schedule 由 Orchestrator 的数据库层事务化保存；JSON 仅用于本地兼容，不应扩展为线上任务队列。SQLite 仅可作为单机开发/测试适配器，并与 PostgreSQL 使用同一 schema 和迁移契约。迁移与备份边界见 [`runtime-data.md`](runtime-data.md)。
+
+Warehouse 只承接按对象组织的异步归档和产物，不保存 installed/task/hook 业务状态；向量数据库只可保存从已脱敏对象派生、可以重建的语义索引。详细分类、边界和迁移步骤见 [`runtime-data.md`](runtime-data.md)。
 
 ## 4. Agent 到 Node Registry
 
-安装和升级进入真实执行阶段后，Agent 向 Node 查询：
+`orchestrator-runtime-worker` 领取内部生命周期任务后，调用 Node 的部署机运行时接口：
 
-- release artifact 下载地址。
-- digest、签名、公钥和授权结果。
-- 配置 schema、端口、路由前缀、依赖声明。
-- 健康检查声明和失败回滚策略。
+```http
+GET /api/v1/runtime/releases/{app_id}/{version}
+Authorization: Bearer <Node Runtime Agent token>
+X-YeYing-Instance: <configured runtime instance>
+X-YeYing-Agent: orchestrator
+```
 
-Node 不写 Project 本地状态，不启动生产机进程，不直接管理 `docker/appstore/` 目录。
+worker 必须在 Node 中为 `NODE_RUNTIME_INSTANCE_ID` 配置对应 Agent 实例凭证。Node API 当前只按精确 SemVer 查询，`latest` 会失败；Project 安装请求需指定已发布版本。worker 会检查响应 app/version、完整文件 checksum、release digest、受信任发布者 Ed25519 签名、runtime manifest 和 Compose 安全子集。
+
+受信任发布者公钥由部署者通过 `NODE_TRUSTED_PUBLISHER_KEYS` 显式配置并管理轮换；Node runtime artifact response 不包含公钥，因此不能从待安装制品自身建立信任。Node token 和 Worker token 分离，前者只访问 Node runtime API，后者只领取和报告 Orchestrator task。
+
+已验证 release 存入 `HUB_APPLICATIONS_DIR` 下不可变目录。执行器不运行发布者提供的 Compose 文件，而是根据签名过的 `runtime.json` 生成受限 Compose 文件，只创建单个固定 digest image 服务、runtime.env 和 loopback 端口绑定。`runtime.env` 仅从 Agent 节点管理员管理的 `HUB_APPLICATION_CONFIG_DIR/<owner-hash>/<app_id>.json` 加上配置的 app base URL 注入；文件权限必须为 `0600`，任务请求和 release bundle 都不能注入 secret。卸载默认使用 `docker compose down --remove-orphans`，保留命名卷。
+
+升级先部署新版本并探测声明的 loopback healthcheck；成功后更新本地 current manifest。失败时尝试恢复上一个本地已验签的 release 并再次做 healthcheck。Worker 租约失效或收到 SIGTERM 时会终止正在运行的 Docker Compose 命令；正常关停会把任务归还 pending，旧 worker 不能上报新结果。每个 worker 进程必须使用唯一 `HUB_WORKER_ID`，不配置时自动生成。当前执行器是单节点首期能力，应用端口仍使用 Node runtime manifest 中发布的静态 `host_port`；端口被占用时部署失败，不会覆写其他实例。多 Project 端口预留、租户路由和公网反向代理仍是上线前工作。
+
+Node 不写 Project 本地状态，不启动部署机进程，也不直接管理 Orchestrator `runtime/` 目录。
 
 ## 5. 兼容边界
 
@@ -82,10 +105,10 @@ Node 不写 Project 本地状态，不启动生产机进程，不直接管理 `d
 - `/api/v1/internal/project/agents/*` 是新增的 Agent Runtime 正式语义。
 - `robot` 命名只保留外部协议字段或隐藏兼容路由；新增代码使用 `agent`。
 
-## 6. 下一步
+## 6. 当前执行闭环与下一步
 
-1. 把本地任务从 pending 状态扩展为 `queued -> running -> healthy -> failed -> rolling_back -> rolled_back`。
-2. 接入 Node Registry release 查询、下载、digest 校验和签名校验。
-3. 实现安装、升级、卸载的真实执行器。
-4. 增加健康检查和失败回滚的可观测日志。
+1. task 以 `pending -> running -> succeeded/failed` 持久化，带 PostgreSQL lease、heartbeat、attempt fencing、worker-owned result、幂等键和可持久化 retry schedule；Node/容器临时故障以指数退避重试，达到最大尝试次数才最终失败。installed 镜像按 Project owner 隔离。升级失败并确认回滚成功时，旧版本仍保持 installed。
+2. task/hook 事件事务写入 PostgreSQL outbox；`orchestrator-outbox-worker` 可异步归档 Warehouse。
+3. 首期 Node runtime release 查询、下载限额、checksum/digest/Ed25519 验签、受限 Compose 生成、install/upgrade/uninstall、loopback healthcheck 和本地旧版本回滚已实现。`HUB_RUNTIME_EXECUTOR_ENABLED` 默认关闭；不开启前不会产生部署副作用。
+4. 上线前还需完成真实 Node 凭证联调、发布者 key 轮换治理、按节点端口预留/租户路由、外部 reverse proxy、应用配置/secret 管理、Docker 资源配额、备份恢复与告警。当前 `latest` 不支持，不应将单节点首期部署宣称为多租户生产就绪。
 5. Project 增加 AI、MCP、任务自动化和通行证扫码登录的 Agent 能力调用协议。
