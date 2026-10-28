@@ -11,7 +11,7 @@ This hook listens for Feishu help / command messages and turns saved pending act
 
 It should:
 
-- reply help text for `/help` from `help.template.md`
+- reply help text for `/help` from `help.md.template`
 - read pending action for the current Feishu conversation
 - detect `/confirm`, `/submit`, `/cancel`
 - support explicit bare draft ID confirmation like `/confirm abcd`

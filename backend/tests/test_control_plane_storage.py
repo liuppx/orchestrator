@@ -16,13 +16,13 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import text, update
 
-from hub.db import init_database
-from hub.migrate_runtime_json import migrate
-from hub.services.auth import AuthSessionService
-from hub.services.messenger import MessengerRuntimeConfig, MessengerStateService
-from hub.outbox_worker import WarehouseOutboxWorker
-from hub.services.runtime import AgentRuntimeState
-from hub.storage import AgentInstance, InstalledAgent, LifecycleTask, OutboxEvent, sessions_for
+from orchestrator.db import init_database
+from orchestrator.migrate_runtime_json import migrate
+from orchestrator.services.auth import AuthSessionService
+from orchestrator.services.openclaw import OpenClawRuntimeConfig, OpenClawRuntimeService
+from orchestrator.outbox_worker import WarehouseOutboxWorker
+from orchestrator.services.runtime import AgentRuntimeState
+from orchestrator.storage import AgentInstance, InstalledAgent, LifecycleTask, OutboxEvent, sessions_for
 
 
 class ControlPlaneStorageTest(unittest.TestCase):
@@ -220,7 +220,7 @@ class ControlPlaneStorageTest(unittest.TestCase):
             root = Path(tmpdir)
             url = f"sqlite:///{root / 'control.db'}"
             init_database(url)
-            config = MessengerRuntimeConfig(
+            config = OpenClawRuntimeConfig(
                 state_file=root / "state.json",
                 instances_root=root / "instances",
                 runtime_dir=root / "runtime",
@@ -233,7 +233,7 @@ class ControlPlaneStorageTest(unittest.TestCase):
                 port_range_end=18010,
                 database_url=url,
             )
-            writer = MessengerStateService(config)
+            writer = OpenClawRuntimeService(config)
             writer.persist_db({
                 "instances": {
                     "bot-1": {
@@ -256,13 +256,13 @@ class ControlPlaneStorageTest(unittest.TestCase):
                 "private-secret",
             )
 
-            stale_copy = MessengerStateService(config).read_db()
-            fresh_copy = MessengerStateService(config).read_db()
+            stale_copy = OpenClawRuntimeService(config).read_db()
+            fresh_copy = OpenClawRuntimeService(config).read_db()
             fresh_copy["instances"]["bot-1"]["name"] = "Fresh"
             writer.persist_db(fresh_copy)
             stale_copy["instances"]["bot-1"]["name"] = "Stale"
             with self.assertRaisesRegex(RuntimeError, "changed concurrently"):
-                MessengerStateService(config).persist_db(stale_copy)
+                OpenClawRuntimeService(config).persist_db(stale_copy)
 
             current = writer.read_db()
             current["instances"]["bot-1"]["status"] = "starting"

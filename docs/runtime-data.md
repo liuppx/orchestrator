@@ -29,18 +29,18 @@ OpenClaw profile 的正常位置在仓库之外：`$HOME/.openclaw-hub-<instance
 
 未设置 `HUB_DATABASE_URL` 时，系统保留单机文件存储模式：控制面把实例注册表整份读写为 JSON，Project Agent 把状态数组整份序列化为 JSON。这是本地兼容路径，不适合多人或多进程在线生产。
 
-首期数据库适配已经提供：设置 `HUB_DATABASE_URL` 后，实例注册表、生命周期 task/hook 和 challenge 消费记录通过 SQLAlchemy 访问；版本化 migrations 提供初始 schema 及后续字段变更。未设置该变量时仍使用 JSON，便于本地快速开始。生产启用前先在仓库根加载部署配置，再运行版本化迁移：
+首期数据库适配已经提供：设置 `HUB_DATABASE_URL` 后，实例注册表、生命周期 task/hook 和 challenge 消费记录通过 SQLAlchemy 访问；版本化 migrations 提供初始 schema 及后续字段变更。未设置该变量时仍使用 JSON，便于本地快速开始。本地和生产统一从 `backend/.env` 读取配置；生产启用前在该文件配置数据库连接，再运行版本化迁移：
 
 ```bash
-set -a
-source config/hub.env
-set +a
 (cd backend && uv run alembic upgrade head)
 ```
 
 迁移旧数据时先停写并备份，目标库需为空，然后导入实例、Project Agent 状态和仍有效的 challenge 摘要：
 
 ```bash
+set -a
+source backend/.env
+set +a
 (cd backend && uv run orchestrator-import-runtime-json "$HUB_RUNTIME_DIR/state.json" \
   --database-url "$HUB_DATABASE_URL" \
   --runtime-dir "$HUB_RUNTIME_DIR" \
@@ -129,7 +129,7 @@ PostgreSQL 是生产控制面的数据库选择；单机开发若使用 SQLite�
 ## 存储与备份规则
 
 1. 源码仓库只保存代码、无密钥模板和可重建的静态定义。禁止把本地 `runtime/`、实例配置、日志、profile、交易结果或凭证强行加入 Git。
-2. 当前本地开发默认将状态放在仓库根 `runtime/`，由 `.gitignore` 排除。生产环境必须在 `config/hub.env` 显式设置独立的绝对路径：`HUB_RUNTIME_DIR` 与 `HUB_INSTANCES_ROOT`；不要依赖仓库内默认目录。
+2. 当前本地开发默认将状态放在仓库根 `runtime/`，由 `.gitignore` 排除。生产环境必须在 `backend/.env` 显式设置独立的绝对路径：`HUB_RUNTIME_DIR` 与 `HUB_INSTANCES_ROOT`；不要依赖仓库内默认目录。
 3. 建议生产持久状态目录使用 `/var/lib/orchestrator/control-plane` 和 `/var/lib/orchestrator/instances`，目录归专用服务账号所有且权限最小化。日志暂时跟随 `HUB_RUNTIME_DIR/logs/`；后续可拆至 `/var/log/orchestrator/` 并接入日志轮转。
 4. 备份应加密并限制访问。需恢复实例时，成套保存控制面注册状态、`HUB_INSTANCES_ROOT`、删除归档，以及对应的 OpenClaw profile 和密钥来源。生产备份前先停止服务或使用一致性快照；交易和 Project Agent 状态不能当作临时缓存删除。
 5. 开发环境可以重建依赖和前端产物，但不能据此推断运行状态可重建。任何清理操作先区分 PID、过期 challenge、日志、任务记录、活跃实例和 trash，不使用 `rm -rf runtime` 作为通用清理方式。

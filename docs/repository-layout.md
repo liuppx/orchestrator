@@ -6,16 +6,16 @@ to make those boundaries explicit.
 
 ## Active product path
 
-These directories define the current Hub runtime and managed agent set and should be treated as
+These directories define the current Orchestrator runtime and managed agent set and should be treated as
 the main delivery path:
 
 - `backend/`: Python control-plane service and API implementation.
-- `frontend/`: React control-plane UI source and build configuration.
+- `web/`: React control-plane UI source and build configuration.
 - `agents/openclaw/`: current OpenClaw-based managed agent implementations.
 - `agents/nanobot/`: current nanobot code kept under the unified agent tree.
 - `scripts/`: bootstrap, run, stop, package, and verification entrypoints for
-  the Hub stack.
-- `config/`: runtime configuration templates used by the active stack.
+  the Orchestrator stack.
+- `backend/.env.template`: the single Orchestrator service configuration template; copy it to `backend/.env`. Agent-specific templates remain within their owning agent directory.
 - `docs/`: current product and runbook documentation.
 
 ## Active support directories
@@ -43,17 +43,17 @@ the primary production entrypoint:
 4. If a directory exists mainly for migration support, document that status in
    its local `README.md`.
 
-## Hub frontend structure
+## Orchestrator web structure
 
-The Hub frontend is currently shipped as one SPA, but its source is now
+The Orchestrator frontend is currently shipped as one SPA, but its source is now
 organized for a future split into agent-specific sites:
 
-- `frontend/src/shell/`: Hub shell, app router, and shared navigation.
-- `frontend/src/platform/`: cross-app platform concerns such as auth,
+- `web/src/shell/`: Orchestrator shell, app router, and shared navigation.
+- `web/src/platform/`: cross-app platform concerns such as auth,
   UCAN-adjacent session wiring, API clients, shared types, and query setup.
-- `frontend/src/apps/`: agent-facing application modules. Each agent app
+- `web/src/apps/`: agent-facing application modules. Each agent app
   should keep its own screens and business UI here.
-- `frontend/dist/`: built frontend artifacts served by the Python backend.
+- `web/dist/`: built web UI artifacts served by the Python backend.
   This directory is runtime/package output and should not be committed as source.
 
 Current rule of thumb:

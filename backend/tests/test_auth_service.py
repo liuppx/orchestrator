@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from hub.services.auth import AuthSessionService
+from orchestrator.services.auth import AuthSessionService
 
 
 class AuthSessionServiceTest(unittest.TestCase):
@@ -82,7 +82,7 @@ class AuthSessionServiceTest(unittest.TestCase):
                 ttl_seconds=3600,
                 challenge_ttl_seconds=300,
                 nonce_store_path=Path(tmpdir) / "consumed_challenges.json",
-                public_base_url="https://hub.example.com",
+                public_base_url="https://orchestrator.example.com",
                 secure_cookie_mode="auto",
             )
             request = SimpleNamespace(
@@ -94,8 +94,8 @@ class AuthSessionServiceTest(unittest.TestCase):
                 request,
                 SimpleNamespace(wallet_id=Account.create().address, chain_id="56"),
             )
-            self.assertIn("hub.example.com wants you to sign in", challenge_view.challenge)
-            self.assertIn("URI: https://hub.example.com/", challenge_view.challenge)
+            self.assertIn("orchestrator.example.com wants you to sign in", challenge_view.challenge)
+            self.assertIn("URI: https://orchestrator.example.com/", challenge_view.challenge)
             self.assertFalse(service.should_secure_cookie(request))
 
     def test_rejects_signature_from_other_wallet(self) -> None:

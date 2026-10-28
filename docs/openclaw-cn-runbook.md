@@ -4,5 +4,5 @@
 
 当前生产主路径请优先阅读：
 - [`README.md`](../README.md)
-- [`docs/hub.md`](./hub.md)
-- [`docs/hub-control-plane-detailed-design.md`](./hub-control-plane-detailed-design.md)
+- [`docs/orchestrator.md`](./orchestrator.md)
+- [`docs/orchestrator-control-plane-detailed-design.md`](./orchestrator-control-plane-detailed-design.md)

@@ -6,7 +6,7 @@ APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${APP_DIR}/config/trader.env}"
 ENV_TEMPLATE="${ENV_TEMPLATE:-${APP_DIR}/config/trader.env.template}"
 STRATEGY_FILE="${STRATEGY_FILE:-${APP_DIR}/config/strategies.yaml}"
-STRATEGY_TEMPLATE="${STRATEGY_TEMPLATE:-${APP_DIR}/config/strategies.example.yaml}"
+STRATEGY_TEMPLATE="${STRATEGY_TEMPLATE:-${APP_DIR}/config/strategies.yaml.template}"
 UV_BIN="${UV_BIN:-$(command -v uv || true)}"
 
 log() {

@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 if [[ ! -f "${ARMY_ROOT}/army.env" ]]; then
-  cp "${ARMY_ROOT}/army.env.example" "${ARMY_ROOT}/army.env"
+  cp "${ARMY_ROOT}/army.env.template" "${ARMY_ROOT}/army.env"
 fi
 
 "${SCRIPT_DIR}/watchdog.sh" || true

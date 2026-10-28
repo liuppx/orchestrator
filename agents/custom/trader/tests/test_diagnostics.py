@@ -140,7 +140,7 @@ class DiagnosticsTest(unittest.TestCase):
             app_dir = Path(tmp)
             (app_dir / "config").mkdir(parents=True, exist_ok=True)
             (app_dir / "config" / "trader.env.template").write_text("TRADER_BROKER=paper\n", encoding="utf-8")
-            (app_dir / "config" / "strategies.example.yaml").write_text("strategies: []\n", encoding="utf-8")
+            (app_dir / "config" / "strategies.yaml.template").write_text("strategies: []\n", encoding="utf-8")
             (app_dir / "config" / "trader.env").write_text("TRADER_BROKER=eastmoney_stub\n", encoding="utf-8")
 
             with redirect_stdout(StringIO()):

@@ -10,16 +10,19 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from pathlib import Path
+from unittest.mock import patch
 
 import uvicorn
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from hub.app import create_app
-from hub.config import Settings
-from hub.db import init_database
+from orchestrator.app import create_app
+from orchestrator.config import Settings
+from orchestrator.db import init_database
+from orchestrator.storage import RuntimeNode, sessions_for
 
 
 def _free_port() -> int:
@@ -51,10 +54,19 @@ class PublicAuthApiTest(unittest.TestCase):
             "HUB_RUNTIME_DIR": str(Path(self.tmpdir.name) / "runtime"),
             "HUB_INSTANCES_ROOT": str(Path(self.tmpdir.name) / "instances"),
             "HUB_BIND_ADDR": f"127.0.0.1:{self.port}",
-            "HUB_PUBLIC_BASE_URL": "https://hub.example.com",
+            "HUB_PUBLIC_BASE_URL": "https://orchestrator.example.com",
             "HUB_SESSION_COOKIE_SECURE_MODE": secure_mode,
+            "HUB_ADMIN_TOKEN": "test-admin-token",
             "HUB_INTERNAL_TOKEN": "test-internal-token",
             "HUB_WORKER_TOKEN": "test-worker-token",
+            "HUB_RUNTIME_NODE_TOKENS": json.dumps({
+                "node-a": "node-a-test-token-with-at-least-32-characters",
+                "node-b": [
+                    "node-b-previous-test-token-with-32-characters",
+                    "node-b-current-test-token-with-32-characters",
+                ],
+            }),
+            "HUB_RUNTIME_NODE_OFFLINE_AFTER_SECONDS": "90",
             "HUB_DATABASE_URL": "",
         }
         env_values["HUB_DATABASE_URL"] = database_url
@@ -128,7 +140,7 @@ class PublicAuthApiTest(unittest.TestCase):
             "/api/v1/public/auth/wallet/challenge",
             method="POST",
             payload={"wallet_id": account.address, "chain_id": "1"},
-            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "hub.example.com"},
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "orchestrator.example.com"},
         )
         self.assertEqual(status, 200)
         assert isinstance(challenge_payload, dict)
@@ -146,7 +158,7 @@ class PublicAuthApiTest(unittest.TestCase):
                 "challenge_token": challenge_payload["challenge_token"],
                 "signature": signed.signature.to_0x_hex(),
             },
-            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "hub.example.com"},
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "orchestrator.example.com"},
         )
         self.assertEqual(status, 200)
         cookie_headers = [value for key, value in response_headers if key.lower() == "set-cookie"]
@@ -204,7 +216,7 @@ class PublicAuthApiTest(unittest.TestCase):
         trader_root = self.repo_root / "agents" / "custom" / "trader"
         (trader_root / "config").mkdir(parents=True, exist_ok=True)
         (trader_root / "config" / "trader.env.template").write_text("TRADER_BROKER=paper\n", encoding="utf-8")
-        (trader_root / "config" / "strategies.example.yaml").write_text("strategies: []\n", encoding="utf-8")
+        (trader_root / "config" / "strategies.yaml.template").write_text("strategies: []\n", encoding="utf-8")
         (trader_root / "config" / "trader.env").write_text("TRADER_BROKER=eastmoney_stub\n", encoding="utf-8")
         return trader_root
 
@@ -237,7 +249,7 @@ class PublicAuthApiTest(unittest.TestCase):
             "/api/v1/public/auth/wallet/challenge",
             method="POST",
             payload={"wallet_id": account.address, "chain_id": "1"},
-            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "hub.example.com"},
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "orchestrator.example.com"},
         )
         self.assertEqual(status, 200)
         assert isinstance(challenge_payload, dict)
@@ -256,7 +268,7 @@ class PublicAuthApiTest(unittest.TestCase):
                 "challenge_token": challenge_payload["challenge_token"],
                 "signature": signed.signature.to_0x_hex(),
             },
-            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "hub.example.com"},
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "orchestrator.example.com"},
         )
         self.assertEqual(status, 200)
         cookie_headers = [value for key, value in response_headers if key.lower() == "set-cookie"]
@@ -385,6 +397,64 @@ class PublicAuthApiTest(unittest.TestCase):
         assert isinstance(deleted, dict)
         self.assertEqual(deleted["id"], instance_id)
 
+    def test_runtime_console_lists_owned_instances_and_providers(self) -> None:
+        self.start_server("never")
+        owner = Account.create()
+        other = Account.create()
+        owner_headers = self.login(owner)
+        other_headers = self.login(other)
+
+        self.jar.clear()
+        status, _, _ = self.request("/api/v1/public/runtime/instances")
+        self.assertEqual(status, 401)
+
+        status, provider_response, _ = self.request("/api/v1/public/runtime/providers", headers=owner_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(provider_response, dict)
+        self.assertEqual(provider_response["items"][0]["id"], "openclaw")
+        self.assertEqual(provider_response["items"][0]["management_mode"], "local-process")
+
+        status, created, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={"runtime_type": "openclaw", "kind": "whatsapp", "name": "Console Bot"},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 200)
+        assert isinstance(created, dict)
+        self.assertEqual(created["runtime_type"], "openclaw")
+        self.assertEqual(created["desired_state"], "stopped")
+        self.assertEqual(created["observed_state"], "created")
+
+        status, listing, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(listing, dict)
+        self.assertEqual(listing["total"], 1)
+        self.assertEqual(listing["stopped"], 1)
+        self.assertEqual(listing["items"][0]["id"], created["id"])
+
+        with patch("orchestrator.services.openclaw.OpenClawRuntimeService.configure_profile", side_effect=RuntimeError("runtime unavailable")):
+            status, failed_start, _ = self.request(
+                f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
+                method="POST",
+                headers=owner_headers,
+            )
+        self.assertEqual(status, 502)
+        assert isinstance(failed_start, dict)
+        self.assertEqual(failed_start["detail"], "runtime unavailable")
+
+        status, listing_after_failure, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(listing_after_failure, dict)
+        self.assertEqual(listing_after_failure["attention"], 1)
+        self.assertEqual(listing_after_failure["items"][0]["desired_state"], "running")
+        self.assertEqual(listing_after_failure["items"][0]["observed_state"], "error")
+
+        status, other_listing, _ = self.request("/api/v1/public/runtime/instances", headers=other_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(other_listing, dict)
+        self.assertEqual(other_listing["items"], [])
+
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")
 
@@ -491,6 +561,99 @@ class PublicAuthApiTest(unittest.TestCase):
         status, installed, _ = self.request("/api/v1/internal/installed", headers=project_headers)
         self.assertEqual(status, 200)
         self.assertEqual(installed["data"][0]["status"], "installed")
+
+    def test_runtime_node_heartbeat_uses_node_scoped_credentials_and_expires(self) -> None:
+        self.start_server("never", use_database=True)
+        heartbeat = {
+            "agent_version": "0.4.2",
+            "providers": [
+                {"id": "openclaw", "version": "2026.10.1", "capabilities": ["start", "stop", "logs"]},
+                {"id": "nanobot", "version": "1.2.0", "capabilities": ["inspect"]},
+            ],
+            "resources": {"cpu_count": 8, "memory_total_bytes": 17179869184},
+            "labels": {"region": "local", "environment": "test"},
+        }
+        path = "/api/v1/internal/runtime-nodes/node-a/heartbeat"
+        status, denied, _ = self.request(path, method="POST", payload=heartbeat)
+        self.assertEqual(status, 401)
+        self.assertEqual(denied["detail"], "invalid node agent credentials")
+
+        status, denied, _ = self.request(
+            path,
+            method="POST",
+            payload=heartbeat,
+            headers={"Authorization": "Bearer node-b-current-test-token-with-32-characters"},
+        )
+        self.assertEqual(status, 401)
+
+        node_headers = {"Authorization": "Bearer node-a-test-token-with-at-least-32-characters"}
+        status, result, _ = self.request(path, method="POST", payload=heartbeat, headers=node_headers)
+        self.assertEqual(status, 200)
+        node = result["data"]["node"]
+        self.assertEqual(node["id"], "node-a")
+        self.assertEqual(node["status"], "online")
+        self.assertEqual(node["agent_version"], "0.4.2")
+        self.assertEqual([provider["id"] for provider in node["providers"]], ["openclaw", "nanobot"])
+        self.assertEqual(node["resources"]["cpu_count"], 8)
+
+        status, denied, _ = self.request("/api/v1/internal/runtime-nodes")
+        self.assertEqual(status, 401)
+        self.assertEqual(denied["detail"], "invalid admin token")
+        with patch.dict(os.environ, {"HUB_ADMIN_TOKEN": "change-me-admin-token"}):
+            status, unavailable, _ = self.request(
+                "/api/v1/internal/runtime-nodes",
+                headers={"Authorization": "Bearer change-me-admin-token"},
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(unavailable["detail"], "admin token is not configured")
+        status, denied, _ = self.request(
+            "/api/v1/internal/runtime-nodes",
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(denied["detail"], "invalid admin token")
+        status, nodes, _ = self.request(
+            "/api/v1/internal/runtime-nodes",
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(nodes["data"]["online"], 1)
+
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        with sessions_for(self.settings.database_url).begin() as session:
+            session.get(RuntimeNode, "node-a").last_seen_at = stale_time
+
+        from orchestrator.api.public import openclaw_runtime_service
+
+        openclaw_runtime_service(self.settings).persist_db({"instances": {}})
+        status, nodes, _ = self.request(
+            "/api/v1/internal/runtime-nodes",
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(nodes["data"]["offline"], 1)
+        node_a = next(item for item in nodes["data"]["items"] if item["id"] == "node-a")
+        self.assertEqual(node_a["status"], "offline")
+
+        status, invalid, _ = self.request(
+            path,
+            method="POST",
+            payload={"agent_version": "0.1.0", "providers": [{"id": "OpenClaw"}]},
+            headers=node_headers,
+        )
+        self.assertEqual(status, 422)
+
+    def test_runtime_node_heartbeat_requires_database(self) -> None:
+        self.start_server("never")
+        headers = {"Authorization": "Bearer node-a-test-token-with-at-least-32-characters"}
+        status, unavailable, _ = self.request(
+            "/api/v1/internal/runtime-nodes/node-a/heartbeat",
+            method="POST",
+            payload={"agent_version": "0.1.0"},
+            headers=headers,
+        )
+        self.assertEqual(status, 503)
+        self.assertIn("HUB_DATABASE_URL", unavailable["detail"])
 
 
 if __name__ == "__main__":

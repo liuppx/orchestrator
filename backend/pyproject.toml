@@ -1,7 +1,7 @@
 [project]
-name = "agent-hub"
+name = "orchestrator"
 version = "0.1.0"
-description = "Python control plane for the agent hub"
+description = "Python control plane for agent runtime orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,11 +19,11 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-hub = "hub.app:main"
-orchestrator-import-runtime-json = "hub.migrate_runtime_json:main"
-orchestrator-init-db = "hub.init_db:main"
-orchestrator-outbox-worker = "hub.outbox_worker:main"
-orchestrator-runtime-worker = "hub.lifecycle_worker:main"
+orchestrator = "orchestrator.app:main"
+orchestrator-import-runtime-json = "orchestrator.migrate_runtime_json:main"
+orchestrator-init-db = "orchestrator.init_db:main"
+orchestrator-outbox-worker = "orchestrator.outbox_worker:main"
+orchestrator-runtime-worker = "orchestrator.lifecycle_worker:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

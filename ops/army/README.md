@@ -16,7 +16,7 @@
 ## 快速启动
 ```bash
 cd /home/administrator/bot
-cp -n ops/army/army.env.example ops/army/army.env
+cp -n ops/army/army.env.template ops/army/army.env
 bash ops/army/bin/start_army.sh
 bash ops/army/bin/status_army.sh
 ```

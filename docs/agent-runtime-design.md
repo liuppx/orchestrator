@@ -2,15 +2,19 @@
 
 ## 1. 架构定位
 
-社区智能体、AI 应用和 MCP 工具的运行链路统一为：
+社区智能体、AI 应用和 MCP 工具的控制与制品流转边界如下：
 
 ```text
-Project -> Agent Runtime -> Node Registry
+Project -> Orchestrator Control Plane -> Lifecycle Worker -> Runtime Node -> Runtime / Workload
+Lifecycle Worker -> YeYing Node Registry -> signed release artifacts
 ```
 
+当前生命周期 worker 与 Runtime 实例都在控制服务所在主机；跨主机 Runtime Node 目前只有心跳接收能力，图中的远端执行关系是目标架构，不是已交付能力。
+
 - Project 是业务系统，只负责项目、任务、文件、成员权限和业务上下文。
-- Agent 是运行控制面，负责智能体实例、工具装配、安装、升级、失败回滚、卸载、健康检查和运行诊断。
-- Node 是社区发布中心，只负责应用和智能体登记、审核、版本、release artifact、签名和授权入口。
+- Orchestrator 是运行控制面，负责智能体实例、工具装配、安装、升级、失败回滚、卸载、健康检查和运行诊断。
+- YeYing Node / Node Registry 是社区发布中心，只负责应用和智能体登记、审核、版本、release artifact、签名和授权入口；它不是运行 Agent 的主机。
+- Runtime Node 是运行 Agent Runtime 的主机。Runtime Node 心跳 API 属于 Orchestrator；与 Node Registry 的制品 API 是两套不同的边界。
 - AppStore 是历史兼容名称，不能再作为新运行时边界的命名来源。
 
 ## 2. Project 到 Agent 的 internal API
@@ -32,6 +36,19 @@ X-YeYing-Instance: project
 | POST | `/api/v1/internal/tasks/{task_id}/result` | 持有者提交 succeeded/failed 结果并更新 installed 镜像 |
 
 worker 心跳、释放和结果必须同时携带当前 `X-Worker-ID` 与 claim 返回的 `attempts`（作为 `X-Worker-Attempt`）；租约过期或 generation 不匹配时旧 worker 的写入会被拒绝。`HUB_WORKER_TOKEN` 未配置时这些路由返回 503。
+
+### Runtime Node 心跳与运维清单
+
+Runtime Node 通过单独的节点级 Bearer 凭证上报其 Node Agent 版本、Runtime Provider 能力、资源和标签。凭证由服务端 `HUB_RUNTIME_NODE_TOKENS` 按 `node_id` 配置，支持单个 token 或最多三个并行 token 用于人工轮换；每个 token 至少 32 个字符，不写入数据库。
+
+| 方法 | 路径 | 鉴权与行为 |
+| --- | --- | --- |
+| POST | `/api/v1/internal/runtime-nodes/{node_id}/heartbeat` | 节点自己的 Bearer token；首次心跳创建节点记录，之后更新心跳和能力 |
+| GET | `/api/v1/internal/runtime-nodes` | 运维 `HUB_ADMIN_TOKEN`；读取全局节点清单，Project `HUB_INTERNAL_TOKEN` 无权访问 |
+
+心跳存入 PostgreSQL 的 `runtime_nodes` 表及其 `capacity` JSON 字段。在线状态由服务端当前时间与 `last_seen_at` 计算，`HUB_RUNTIME_NODE_OFFLINE_AFTER_SECONDS` 默认 90 秒；未收到心跳的历史本机节点为 `unknown`。实例元数据写入不会伪造或刷新节点心跳。
+
+当前仓库只提供服务端接收端，没有交付独立 Node Agent 心跳客户端、节点管理 UI、凭证自动签发/撤销，也没有通过心跳接口执行远端 Runtime 的启停或部署。该清单暂不接入普通用户控制台，因为组织/RBAC 隔离尚未实现。生产的跨主机心跳须使用 HTTPS、受控网络和环境注入的随机凭证。
 
 兼容入口：
 
@@ -77,7 +94,7 @@ JSON 文件模式下，该文件记录：
 
 Warehouse 只承接按对象组织的异步归档和产物，不保存 installed/task/hook 业务状态；向量数据库只可保存从已脱敏对象派生、可以重建的语义索引。详细分类、边界和迁移步骤见 [`runtime-data.md`](runtime-data.md)。
 
-## 4. Agent 到 Node Registry
+## 4. Runtime Worker 到 YeYing Node Registry
 
 `orchestrator-runtime-worker` 领取内部生命周期任务后，调用 Node 的部署机运行时接口：
 

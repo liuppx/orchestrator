@@ -70,8 +70,7 @@ function isAppRootCandidate(candidate) {
   return (
     fs.existsSync(path.join(candidate, "scripts", "bootstrap.sh")) &&
     (fs.existsSync(path.join(candidate, "config", "github-app.config.env")) ||
-      fs.existsSync(path.join(candidate, "config", "github-app.config.env.template")) ||
-      fs.existsSync(path.join(candidate, "config", "github-app.config.env.example"))) &&
+      fs.existsSync(path.join(candidate, "config", "github-app.config.env.template"))) &&
     fs.existsSync(path.join(candidate, "workspace_assets"))
   );
 }
@@ -121,7 +120,7 @@ export function loadPolicy(workspaceRoot) {
   }
 
   const primary = path.join(workspaceRoot, "config", "policy.json");
-  const fallback = path.join(workspaceRoot, "config", "policy.example.json");
+  const fallback = path.join(workspaceRoot, "config", "policy.json.template");
   if (fs.existsSync(primary)) {
     return readJsonIfExists(primary, {});
   }

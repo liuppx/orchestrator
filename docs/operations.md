@@ -4,15 +4,13 @@
 
 ## 配置
 
-从仓库根目录创建服务配置：
+在每个环境使用同一个配置路径。首次部署从仓库根目录创建：
 
 ```bash
-cp config/hub.env.template config/hub.env
+test -f backend/.env || cp backend/.env.template backend/.env
 ```
 
-编辑 `config/hub.env`，至少设置 `ROUTER_API_KEY`、`HUB_SESSION_SECRET` 和 `HUB_INTERNAL_TOKEN`。`HUB_ADMIN_TOKEN` 暂无对应的 Admin API，不作为当前启动必需项。生产环境还应设置 `HUB_PUBLIC_BASE_URL` 为控制台 HTTPS 地址。
-
-本地开发专用环境配置位于 `backend/.env`，模板为 `backend/.env.template`。`backend/.env` 不应复制进生产配置或提交到版本库。
+编辑 `backend/.env`，按当前环境填写配置。生产至少设置 `ROUTER_API_KEY`、`HUB_SESSION_SECRET` 和 `HUB_INTERNAL_TOKEN`；如果运维需要查询全局 Runtime Node 清单，还要设置独立的 `HUB_ADMIN_TOKEN`。生产环境还应设置 `HUB_PUBLIC_BASE_URL` 为控制台 HTTPS 地址，并配置独立的 `HUB_RUNTIME_DIR` 与 `HUB_INSTANCES_ROOT`。建议将 `HUB_SESSION_COOKIE_SECURE_MODE` 设为 `auto` 或 `always`。该文件包含凭证，应限制为服务账号可读且不要提交到版本库。
 
 ## 构建与依赖
 
@@ -20,7 +18,7 @@ cp config/hub.env.template config/hub.env
 
 ```bash
 (cd backend && uv sync)
-(cd frontend && npm ci && npm run build)
+(cd web && npm ci && npm run build)
 ```
 
 如需由控制面管理 OpenClaw 实例，按环境准备 OpenClaw：
@@ -41,7 +39,7 @@ bash scripts/starter.sh restart
 bash scripts/starter.sh stop
 ```
 
-默认访问地址为 `http://127.0.0.1:3900/`。启动脚本从 `config/hub.env` 读取服务配置，状态和日志默认保存在 `runtime/`。
+默认访问地址为 `http://127.0.0.1:3900/`。启动脚本从 `backend/.env` 读取服务配置；状态和日志默认保存在 `runtime/`。
 
 ## 健康检查
 
@@ -60,12 +58,12 @@ bash scripts/doctor_full_stack.sh
 bash scripts/package.sh
 ```
 
-安装包输出到 `output/`。打包脚本从当前 `origin/main` 构建，包含 `backend/`、`frontend/`、`agents/`、`config/` 和 `scripts/`，不包含运行中的 `runtime/` 状态。部署到目标机后，按上文创建 `config/hub.env`、安装依赖并构建前端，再用 `scripts/starter.sh` 启动服务。
+安装包输出到 `output/`。打包脚本从当前 `origin/main` 构建，包含 `backend/`、`web/`、`agents/` 和 `scripts/`，不包含运行中的 `runtime/` 状态。部署到目标机后，按上文创建 `backend/.env`、安装依赖并构建前端，再用 `scripts/starter.sh` 启动服务。
 
 ## 目录用途
 
 - [运行时数据分类与保留规划](runtime-data.md)
-- 生产数据库首次启用前：在 `config/hub.env` 设置 `HUB_DATABASE_URL`，加载该配置后执行 `cd backend && uv run alembic upgrade head`，再按 `runtime-data.md` 的停写、备份和空库导入步骤迁移旧 JSON。
+- 生产数据库首次启用前：在 `backend/.env` 设置 `HUB_DATABASE_URL`，执行 `cd backend && uv run alembic upgrade head`，再按 `runtime-data.md` 的停写、备份和空库导入步骤迁移旧 JSON。
 - Warehouse 归档是独立 worker：配置 `YEYING_WAREHOUSE_URL` 和短期 scoped `YEYING_WAREHOUSE_TOOL_TOKEN` 后，在单独进程运行 `cd backend && uv run orchestrator-outbox-worker`；修正永久错误后可用 `uv run orchestrator-outbox-worker --retry-failed --once` 重新排队。未配置凭据时 worker 拒绝启动，不影响控制面。
 - 应用生命周期执行器是独立 worker：只有在完成 Node runtime 凭证、`NODE_TRUSTED_PUBLISHER_KEYS`、Docker Compose v2、应用配置权限和反向代理评审后，显式设置 `HUB_RUNTIME_EXECUTOR_ENABLED=true`，再运行 `cd backend && uv run orchestrator-runtime-worker`。Docker Compose 仅用于启动/停止被管理的应用容器，不用于启动 Orchestrator 控制面。worker 只接受精确 SemVer，验证 Node 返回的 checksum、release digest、Ed25519 签名和 runtime 安全子集，然后生成受限 Compose；不会直接执行发布者提交的 Compose 或任意 shell。当前 host port 仍为 release 静态端口，单节点多 Project 调度和租户路由尚未完成。
 - `runtime/`：控制面状态、日志和托管智能体实例数据；不要作为源码清理。
@@ -92,7 +90,7 @@ HUB_APPLICATION_CONFIG_DIR=/var/lib/orchestrator/app-config
 HUB_APPLICATION_PUBLIC_BASE_URL=https://apps.example.com
 ```
 
-凭证应通过服务管理器的 secret/environment 注入，或限制 `config/hub.env` 只有服务账号可读。每个 Project/app 的配置文件路径为 `<HUB_APPLICATION_CONFIG_DIR>/<owner-hash>/<app-id>.json`；`owner-hash` 是 `sha256(X-YeYing-Instance UTF-8)[:24]`。文件只包含 runtime manifest 声明的白名单来源，如 `DB_HOST`、`DB_PASSWORD`、`REDIS_HOST` 或 `S3_SECRET_ACCESS_KEY`，目录权限 `0700`、文件权限 `0600`。例如：
+凭证应通过服务管理器的 secret/environment 注入，或限制 `backend/.env` 只有服务账号可读。每个 Project/app 的配置文件路径为 `<HUB_APPLICATION_CONFIG_DIR>/<owner-hash>/<app-id>.json`；`owner-hash` 是 `sha256(X-YeYing-Instance UTF-8)[:24]`。文件只包含 runtime manifest 声明的白名单来源，如 `DB_HOST`、`DB_PASSWORD`、`REDIS_HOST` 或 `S3_SECRET_ACCESS_KEY`，目录权限 `0700`、文件权限 `0600`。例如：
 
 ```bash
 PROJECT_INSTANCE_ID=project-local

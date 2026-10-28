@@ -10,15 +10,13 @@ tag_arg="${1:-}"
 source_dir=""
 worktree_dir=""
 backend_src=""
-frontend_src=""
+web_src=""
 agents_src=""
-config_src=""
 starter_src=""
 
 backend_rel="backend"
-frontend_rel="frontend"
+web_rel="web"
 agents_rel="agents"
-config_rel="config"
 scripts_rel="scripts"
 
 usage() {
@@ -71,9 +69,8 @@ prepare_source_dir() {
   git -C "$root_dir" worktree add --detach "$worktree_dir" "$ref" >/dev/null
   source_dir="$worktree_dir"
   backend_src="$source_dir/$backend_rel"
-  frontend_src="$source_dir/$frontend_rel"
+  web_src="$source_dir/$web_rel"
   agents_src="$source_dir/$agents_rel"
-  config_src="$source_dir/$config_rel"
   starter_src="$source_dir/$scripts_rel/starter.sh"
 }
 
@@ -84,10 +81,10 @@ build_artifacts() {
 
   require_cmd npm
 
-  local frontend_src="$source_dir/$frontend_rel"
-  echo "Building frontend artifacts in package worktree..."
+  local web_src="$source_dir/$web_rel"
+  echo "Building web UI artifacts in package worktree..."
   (
-    cd "$frontend_src"
+    cd "$web_src"
     if [[ -f package-lock.json ]]; then
       npm ci
     else
@@ -106,28 +103,24 @@ verify_artifacts() {
     echo "Missing backend project file: $backend_src/pyproject.toml" >&2
     exit 1
   fi
-  if [[ ! -d "$frontend_src" ]]; then
-    echo "Missing frontend directory: $frontend_src" >&2
+  if [[ ! -d "$web_src" ]]; then
+    echo "Missing web directory: $web_src" >&2
     exit 1
   fi
-  if [[ ! -f "$frontend_src/package.json" ]]; then
-    echo "Missing frontend package file: $frontend_src/package.json" >&2
+  if [[ ! -f "$web_src/package.json" ]]; then
+    echo "Missing web package file: $web_src/package.json" >&2
     exit 1
   fi
-  if [[ ! -f "$frontend_src/dist/index.html" ]]; then
-    echo "Missing frontend build output: $frontend_src/dist/index.html" >&2
+  if [[ ! -f "$web_src/dist/index.html" ]]; then
+    echo "Missing web build output: $web_src/dist/index.html" >&2
     exit 1
   fi
   if [[ ! -d "$agents_src" ]]; then
     echo "Missing agents directory: $agents_src" >&2
     exit 1
   fi
-  if [[ ! -f "$config_src/hub.env.template" ]]; then
-    echo "Missing env template: $config_src/hub.env.template" >&2
-    exit 1
-  fi
   if [[ ! -f "$backend_src/.env.template" ]]; then
-    echo "Missing backend local env template: $backend_src/.env.template" >&2
+    echo "Missing backend env template: $backend_src/.env.template" >&2
     exit 1
   fi
   if [[ ! -f "$starter_src" ]]; then
@@ -236,9 +229,8 @@ rm -rf "$stage_dir"
 mkdir -p "$stage_dir"
 
 cp -R "$backend_src" "$stage_dir/"
-cp -R "$frontend_src" "$stage_dir/"
+cp -R "$web_src" "$stage_dir/"
 cp -R "$agents_src" "$stage_dir/"
-cp -R "$config_src" "$stage_dir/"
 cp -R "$source_dir/$scripts_rel" "$stage_dir/"
 
 runtime_dir_in_package="$(find "$stage_dir" -type d -name runtime -print -quit)"

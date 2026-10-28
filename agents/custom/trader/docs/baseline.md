@@ -49,7 +49,7 @@
 agents/custom/trader/
   config/
     trader.env.template
-    strategies.example.yaml
+    strategies.yaml.template
   docs/
     baseline.md
     runbook.md
@@ -173,8 +173,6 @@ agents/custom/trader/
 
 当前关键字段包括：
 
-- `TRADER_BOT_NAME`
-- `TRADER_BIND_MODE`
 - `TRADER_LOOP_INTERVAL_SECONDS`
 - `TRADER_LOG_LEVEL`
 - `TRADER_RUNTIME_DIR`
@@ -185,7 +183,7 @@ agents/custom/trader/
 
 ### 7.2 策略配置
 
-模板文件：`config/strategies.example.yaml`
+模板文件：`config/strategies.yaml.template`
 
 当前策略配置结构已经稳定到可以作为后续基线：
 

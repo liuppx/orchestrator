@@ -209,8 +209,6 @@ marimo/_lsp/
 __marimo__/
 
 .env.local
-config/bot-hub.env
-config/hub.env
 .openclaw/
 *.bak.*
 ops/reports/

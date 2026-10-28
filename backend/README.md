@@ -1,27 +1,21 @@
 # Backend
 
-Python/FastAPI control plane, packaged as `agent-hub`.
+Python/FastAPI control plane, packaged as `orchestrator`.
 
 From the repository root, install and run it with:
 
 ```bash
 (cd backend && uv sync)
-test -f config/hub.env || cp config/hub.env.template config/hub.env
-set -a
-source config/hub.env
-set +a
+test -f backend/.env || cp backend/.env.template backend/.env
 (cd backend && uv run alembic upgrade head)  # HUB_DATABASE_URL 已配置时执行
 bash scripts/starter.sh start
 ```
 
-The control plane runs as a native Python process managed by `scripts/starter.sh`; Docker is not used to start Orchestrator. See the [root README](../README.md) for frontend startup and [operations docs](../docs/operations.md) for deployment. Stop it with `bash scripts/starter.sh stop`.
+The control plane runs as a native Python process managed by `scripts/starter.sh`; Docker is not used to start Orchestrator. See the [root README](../README.md) for local web UI startup and [operations docs](../docs/operations.md) for deployment. Stop it with `bash scripts/starter.sh stop`.
 
-For production control-plane state, set `HUB_DATABASE_URL` in `config/hub.env` to PostgreSQL, source that file from the repository root, then apply the versioned schema before starting the service:
+Use `backend/.env` for both local and production service configuration, with values appropriate to each environment. For PostgreSQL, set `HUB_DATABASE_URL` there and apply the versioned schema before starting the service:
 
 ```bash
-set -a
-source config/hub.env
-set +a
 (cd backend && uv run alembic upgrade head)
 ```
 
@@ -37,14 +31,11 @@ After correcting a permanent Warehouse or authorization failure, explicitly requ
 
 ## Application lifecycle worker
 
-`orchestrator-runtime-worker` consumes persisted install, upgrade, and uninstall tasks. It is disabled unless `HUB_RUNTIME_EXECUTOR_ENABLED=true`; the node must have Docker Compose v2, PostgreSQL, a Node Runtime Agent credential, and trusted publisher public keys configured in `config/hub.env`. Transient Node/Docker/healthcheck errors use persistent exponential retry scheduling, bounded by `HUB_WORKER_MAX_ATTEMPTS`. Configure `HUB_APPLICATION_CONFIG_DIR` with per-Project/app JSON files owned by the service account and mode `0600` for values referenced by `runtime.json.environment`. The JSON maps allowed source names such as `DB_HOST` or `DB_PASSWORD` to strings; `APP_URL` is derived by the worker. Its owner directory is the first 24 hex characters of SHA-256 over the `X-YeYing-Instance` value. Do not put credentials in lifecycle request payloads.
+`orchestrator-runtime-worker` consumes persisted install, upgrade, and uninstall tasks. It is disabled unless `HUB_RUNTIME_EXECUTOR_ENABLED=true`; the node must have Docker Compose v2, PostgreSQL, a Node Runtime Agent credential, and trusted publisher public keys configured in `backend/.env`. Transient Node/Docker/healthcheck errors use persistent exponential retry scheduling, bounded by `HUB_WORKER_MAX_ATTEMPTS`. Configure `HUB_APPLICATION_CONFIG_DIR` with per-Project/app JSON files owned by the service account and mode `0600` for values referenced by `runtime.json.environment`. The JSON maps allowed source names such as `DB_HOST` or `DB_PASSWORD` to strings; `APP_URL` is derived by the worker. Its owner directory is the first 24 hex characters of SHA-256 over the `X-YeYing-Instance` value. Do not put credentials in lifecycle request payloads.
 
-Start one worker on the deployment node:
+Start one worker on the deployment node; it reads `backend/.env` from its working directory:
 
 ```bash
-set -a
-source config/hub.env
-set +a
 (cd backend && uv run orchestrator-runtime-worker)
 ```
 

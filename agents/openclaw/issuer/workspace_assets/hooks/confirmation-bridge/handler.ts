@@ -265,7 +265,7 @@ function statusConflictMessage(action, payload) {
 }
 
 function helpTemplatePath(workspaceRoot) {
-  return path.join(workspaceRoot, "hooks", "confirmation-bridge", "help.template.md");
+  return path.join(workspaceRoot, "hooks", "confirmation-bridge", "help.md.template");
 }
 
 function fallbackHelpTemplate() {

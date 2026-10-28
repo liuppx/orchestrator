@@ -13,8 +13,8 @@ USAGE
 }
 
 load_env() {
-  local primary="$ROOT_DIR/config/hub.env"
-  local template="$ROOT_DIR/config/hub.env.template"
+  local primary="$ROOT_DIR/backend/.env"
+  local template="$ROOT_DIR/backend/.env.template"
   local loaded=""
   local has_repo_root=0
   local has_runtime_dir=0
@@ -93,9 +93,9 @@ start_command_desc() {
   if [[ -n "${HUB_CONTROL_PLANE_CMD:-}" ]]; then
     echo "$HUB_CONTROL_PLANE_CMD"
   elif command -v uv >/dev/null 2>&1; then
-    echo "uv run agent-hub (cwd=${HUB_PYTHON_APP_DIR})"
-  elif [[ -x "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub" ]]; then
-    echo "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub"
+    echo "uv run orchestrator (cwd=${HUB_PYTHON_APP_DIR})"
+  elif [[ -x "${HUB_PYTHON_APP_DIR}/.venv/bin/orchestrator" ]]; then
+    echo "${HUB_PYTHON_APP_DIR}/.venv/bin/orchestrator"
   else
     echo "[error] Python control plane not ready. Install dependencies with: (cd backend && uv sync)" >&2
     exit 1
@@ -112,7 +112,7 @@ start_command_shell() {
       "$HUB_PYTHON_APP_DIR" \
       "$HUB_CONTROL_PLANE_CMD"
   elif command -v uv >/dev/null 2>&1; then
-    printf 'export HUB_REPO_ROOT=%q; export HUB_RUNTIME_DIR=%q; export HUB_INSTANCES_ROOT=%q; export HUB_BIND_ADDR=%q; cd %q && exec uv run agent-hub' \
+    printf 'export HUB_REPO_ROOT=%q; export HUB_RUNTIME_DIR=%q; export HUB_INSTANCES_ROOT=%q; export HUB_BIND_ADDR=%q; cd %q && exec uv run orchestrator' \
       "$HUB_REPO_ROOT" \
       "$HUB_RUNTIME_DIR" \
       "$HUB_INSTANCES_ROOT" \
@@ -124,7 +124,7 @@ start_command_shell() {
       "$HUB_RUNTIME_DIR" \
       "$HUB_INSTANCES_ROOT" \
       "$HUB_BIND_ADDR" \
-      "${HUB_PYTHON_APP_DIR}/.venv/bin/agent-hub"
+      "${HUB_PYTHON_APP_DIR}/.venv/bin/orchestrator"
   fi
 }
 

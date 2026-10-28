@@ -225,7 +225,7 @@ test("confirmation bridge requires explicit draft id when multiple drafts exist 
     admins: ["admin-user"]
   });
   fs.writeFileSync(
-    path.join(workspaceRoot, "hooks", "confirmation-bridge", "help.template.md"),
+    path.join(workspaceRoot, "hooks", "confirmation-bridge", "help.md.template"),
     ["自定义帮助", "示例：/confirm abcd", "", "{{REPO_ALIASES_SECTION}}"].join("\n")
   );
   installFakeCreateTool(path.join(workspaceRoot, "tools", "github_issue_create.mjs"));

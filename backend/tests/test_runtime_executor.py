@@ -16,9 +16,9 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from hub.node_registry import NodeRegistryClient, ReleaseError, ReleaseVerifier
-from hub.lifecycle_worker import LifecycleWorker
-from hub.runtime_executor import ExecutionResult, RuntimeExecutor
+from orchestrator.node_registry import NodeRegistryClient, ReleaseError, ReleaseVerifier
+from orchestrator.lifecycle_worker import LifecycleWorker
+from orchestrator.runtime_executor import ExecutionResult, RuntimeExecutor
 
 
 def _stable_json(value: dict) -> str:

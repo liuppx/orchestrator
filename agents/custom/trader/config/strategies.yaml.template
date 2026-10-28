@@ -1,0 +1,49 @@
+# Strategy examples are disabled from live order placement by default.
+# Copy this file to strategies.yaml, review every limit, and keep dry_run true
+# until market-data, broker, risk and reconciliation checks have passed.
+strategies:
+  # Daily breakout example. `enabled` controls whether the engine evaluates it.
+  - id: etf-breakout-demo
+    enabled: true
+    market: a-share # market identifier used by the selected data provider
+    symbol: 510300.SH
+    name: CSI300 ETF Demo # human-readable name shown in reports
+    timeframe: 1d # candle interval, for example 1d or 1m
+    strategy: breakout # strategy implementation id
+    history_window: 20 # bars loaded for indicator and context calculations
+    breakout_lookback: 5 # prior bars used to identify a breakout
+    quantity: 100 # order quantity per entry
+    max_position: 500 # maximum allowed position quantity
+    stop_loss_pct: 0.03 # 3% protective stop threshold
+    take_profit_pct: 0.08 # 8% take-profit threshold
+    dry_run: true # plan and record orders without submitting them
+
+  # Auction-wave strategy example. Disabled and buy-side gated by default.
+  - id: auction-wave-demo
+    enabled: false
+    market: a-share
+    symbol: 510300.SH
+    name: Auction Wave Demo
+    timeframe: 1m
+    strategy: auction_wave
+    history_window: 20
+    breakout_lookback: 10
+    quantity: 100 # target entry quantity
+    position_quantity: 200 # position size used by auction-wave logic
+    max_position: 500 # hard strategy position ceiling
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.08
+    dry_run: true # must remain true until explicitly approved for live execution
+    enable_buy: false # independent gate for buy signals
+    lot_size: 100 # minimum trade lot used for quantity rounding
+    active_lookback_days: 10 # lookback for prior activity classification
+    active_threshold_pct: 4.0 # activity threshold in percent
+    breakout_buffer_pct: 0.2 # required breakout margin in percent
+    resistance_lookback_days: 20 # lookback used to locate resistance
+    resistance_buffer_pct: 1.0 # resistance proximity buffer in percent
+    auction_lock_time: "09:29" # end of the call-auction observation window
+    auction_open_end_time: "09:35" # end of opening confirmation window
+    auction_zero_threshold_pct: 0.0 # neutral opening-change threshold
+    auction_strong_open_threshold_pct: 3.0 # strong-open threshold in percent
+    afternoon_exit_time: "14:30" # configured time for afternoon exit checks
+    limit_up_threshold_pct: 9.8 # price-change threshold used for limit-up handling

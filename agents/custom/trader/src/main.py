@@ -134,7 +134,7 @@ def init_config_once(config: AppConfig) -> dict:
         },
         {
             "kind": "strategy",
-            "source": config.app_dir / "config" / "strategies.example.yaml",
+            "source": config.app_dir / "config" / "strategies.yaml.template",
             "target": config.strategy_file,
         },
     ]

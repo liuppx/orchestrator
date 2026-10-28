@@ -156,7 +156,7 @@ python -m src.main run-once
 ```
 
 本地凭证放在 `config/trader.env`，该文件已加入 git ignore。
-策略示例配置在 `config/strategies.example.yaml`；`init-config` 会在缺失时从示例生成本地 `config/strategies.yaml`，不会覆盖已有文件。
+策略模板在 `config/strategies.yaml.template`；`init-config` 会在缺失时从模板生成本地 `config/strategies.yaml`，不会覆盖已有文件。
 
 当前默认配置是 DSA 轻量模式，重点保证 `run-once` 能稳定产出：
 

@@ -2,10 +2,10 @@
 
 ## 当前状态
 
-当前“信使”智能体的控制面主要由仓库根目录的 `backend/` 和 `frontend/` 提供：
+当前“信使”智能体的控制面主要由仓库根目录的 `backend/` 和 `web/` 提供：
 
-- 后端入口：`backend/src/hub/`
-- 前端入口：`frontend/dist/index.html`
+- 后端入口：`backend/src/orchestrator/`
+- 前端入口：`web/dist/index.html`
 
 本目录当前用于承接：
 

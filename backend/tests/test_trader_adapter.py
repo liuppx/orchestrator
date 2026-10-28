@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from hub.adapters.trader import TraderAdapter
+from orchestrator.adapters.trader import TraderAdapter
 
 
 class TraderAdapterTest(unittest.TestCase):
@@ -252,7 +252,7 @@ class TraderAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             trader_root = self.build_root(Path(tmpdir))
             (trader_root / "config" / "trader.env.template").write_text("TRADER_BROKER=paper\n", encoding="utf-8")
-            (trader_root / "config" / "strategies.example.yaml").write_text("strategies: []\n", encoding="utf-8")
+            (trader_root / "config" / "strategies.yaml.template").write_text("strategies: []\n", encoding="utf-8")
             (trader_root / "config" / "trader.env").write_text("TRADER_BROKER=eastmoney_stub\n", encoding="utf-8")
             adapter = TraderAdapter(trader_root)
 

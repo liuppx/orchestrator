@@ -10,59 +10,37 @@
 
 ```bash
 (cd backend && uv sync)
-test -f config/hub.env || cp config/hub.env.template config/hub.env
-(cd frontend && npm ci)
+test -f backend/.env || cp backend/.env.template backend/.env
+(cd web && npm ci)
 ```
 
-在 `config/hub.env` 配置本地服务参数；使用 PostgreSQL 时设置 `HUB_DATABASE_URL`（数据库凭据只保存在本机配置，不要提交）。仅在启用 PostgreSQL 时，首次或每次升级后先加载同一份服务配置，再执行版本化迁移：
+服务参数只有一套，统一配置在 `backend/.env`；模板是 `backend/.env.template`，本地和生产环境使用同一路径，按环境填写不同的值。不要再创建根目录 Hub/OpenClaw 服务配置文件。使用 PostgreSQL 时，在该文件设置 `HUB_DATABASE_URL`（数据库凭据只保存在本机配置，不要提交）。仅在启用 PostgreSQL 时，首次或每次升级后执行版本化迁移：
 
 ```bash
-set -a
-source config/hub.env
-set +a
 (cd backend && uv run alembic upgrade head)
 ```
 
-使用仓库启动脚本以原生 Python 进程启动后端控制面，不需要 Docker。脚本会在后台运行服务并管理 PID 与日志：
+本地开发时在终端一启动后端控制面：
 
 ```bash
-bash scripts/starter.sh start
+cd backend
+uv run orchestrator
 ```
 
-终端二启动前端开发服务器：
+在终端二启动前端开发服务器：
 
 ```bash
-cd frontend
+cd web
 npm run dev
 ```
 
-打开 <http://127.0.0.1:5174/>。前端开发服务器会将 `/api` 请求代理到后端 `http://127.0.0.1:3900`。停止前端按 `Ctrl+C`；停止后端运行：
-
-```bash
-bash scripts/starter.sh stop
-```
-
-需要验证 Warehouse 归档时，在 `config/hub.env` 配置 `YEYING_WAREHOUSE_URL` 和短期 `YEYING_WAREHOUSE_TOOL_TOKEN` 后，另开终端运行：
-
-```bash
-set -a
-source config/hub.env
-set +a
-(cd backend && uv run orchestrator-outbox-worker --once)
-```
-
-若需要管理已发布的 Node 应用，应用生命周期 worker 是独立的可选进程，运行前置条件见 [运维文档](docs/operations.md)；它使用 Docker Compose 启动被管理的应用容器，不会用 Docker 启动 Orchestrator。
-
-本地后端测试：
-
-```bash
-(cd backend && uv run python -m unittest discover -s tests)
-```
+打开 <http://127.0.0.1:5174/>。前端开发服务器会将 `/api` 请求代理到后端 `http://127.0.0.1:3900`。退出时分别在两个终端按 `Ctrl+C`。生产启停、打包和后台 worker 运维见[生产部署与运维](docs/operations.md)。
 
 ## 文档
 
-- [控制面说明](docs/hub.md)
+- [Orchestrator 控制面说明](docs/orchestrator.md)
 - [生产部署与运维](docs/operations.md)
 - [运行时数据规划](docs/runtime-data.md)
+- [配置说明](docs/configuration.md)
 - [仓库目录结构](docs/repository-layout.md)
-- [控制面详细设计](docs/hub-control-plane-detailed-design.md)
+- [控制面详细设计](docs/orchestrator-control-plane-detailed-design.md)
