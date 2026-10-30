@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     node_max_release_bytes: int = Field(default=4 * 1024 * 1024, alias="NODE_MAX_RELEASE_BYTES")
     application_public_base_url: str | None = Field(default=None, alias="HUB_APPLICATION_PUBLIC_BASE_URL")
     identity_node_url: str | None = Field(default=None, alias="IDENTITY_NODE_URL")
-    identity_app_id: str = Field(default="orchestrator", alias="IDENTITY_APP_ID")
+    identity_app_id: str = Field(default="", alias="IDENTITY_APP_ID")
+    identity_redirect_uri: str | None = Field(default=None, alias="IDENTITY_REDIRECT_URI")
+    identity_trust_dir: Path | None = Field(default=None, alias="IDENTITY_TRUST_DIR")
 
     @property
     def resolved_runtime_dir(self) -> Path:

@@ -131,6 +131,28 @@ class ConsumedChallenge(Base):
     consumed_at = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class IdentityLoginSession(Base):
+    __tablename__ = "identity_login_sessions"
+
+    id = mapped_column(String(128), primary_key=True)
+    kind = mapped_column(String(32), nullable=False)
+    request_id = mapped_column(String(255), unique=True)
+    state = mapped_column(String(128), unique=True)
+    redirect_uri = mapped_column(String(1024))
+    code_verifier = mapped_column(String(255))
+    audience = mapped_column(String(1024))
+    nonce = mapped_column(String(255))
+    scopes = mapped_column(JSON_VALUE, nullable=False, default=list)
+    status = mapped_column(String(32), nullable=False, default="pending")
+    authorization_code = mapped_column(String(2048))
+    did = mapped_column(String(255))
+    wallet_address = mapped_column(String(64))
+    error_message = mapped_column(Text)
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi import Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,6 +17,9 @@ from orchestrator.models import (
     BotInstanceActionResponse,
     AuthSessionView,
     AuthSessionVerifyRequest,
+    IdentityLoginResultEnvelope,
+    IdentityLoginSessionEnvelope,
+    IdentityLoginSessionView,
     BotInstanceCreateRequest,
     BotInstanceDiagnoseResponse,
     BotInstanceListResponse,
@@ -43,10 +49,28 @@ from orchestrator.services import (
     SESSION_COOKIE_NAME,
     auth_service,
 )
+from orchestrator.services.identity_auth import IdentityAuthService
 from orchestrator.services.openclaw import short_wallet
 from orchestrator.services.runtime_providers import runtime_providers
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
+
+
+def identity_auth_service(settings: Settings) -> IdentityAuthService:
+    return IdentityAuthService(settings, auth_service(settings))
+
+
+def set_identity_session_cookie(response: Response, settings: Settings, request: Request, token: str) -> None:
+    service = auth_service(settings)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=settings.session_ttl_seconds,
+        httponly=True,
+        samesite="lax",
+        secure=service.should_secure_cookie(request),
+        path="/",
+    )
 
 
 def require_session(request: Request) -> AuthSessionView:
@@ -297,6 +321,75 @@ async def public_auth_wallet_verify(
 async def public_auth_logout(response: Response) -> dict[str, bool]:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"ok": True}
+
+
+@router.post("/auth/identity/login/session", response_model=IdentityLoginSessionEnvelope)
+async def public_auth_identity_login_session(request: Request, avatar: int = Query(default=1)) -> dict[str, object]:
+    settings = Settings()
+    service = auth_service(settings)
+    base_url = service.resolve_base_url(request).rstrip("/")
+    parsed = urlparse(base_url)
+    audience = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        return {"code": 0, "message": "ok", "data": identity_auth_service(settings).create_wallet_session(audience, avatar=avatar == 1)}
+    except ValueError as exc:
+        return JSONResponse(status_code=503, content={"code": 1, "message": str(exc)})
+
+
+@router.post("/auth/identity/login/verify", response_model=IdentityLoginResultEnvelope)
+async def public_auth_identity_login_verify(payload: dict[str, object], request: Request, response: Response) -> dict[str, object]:
+    settings = Settings()
+    identity = identity_auth_service(settings)
+    session_id = str(payload.get("session_id", "")).strip()
+    presentation = payload.get("presentation")
+    if not session_id or not isinstance(presentation, dict):
+        return JSONResponse(status_code=400, content={"code": 1, "message": "登录参数无效"})
+    try:
+        session, did = identity.verify_wallet_session(session_id, presentation)
+    except ValueError as exc:
+        return JSONResponse(status_code=401, content={"code": 1, "message": str(exc)})
+    token = auth_service(settings).encode_session(session)
+    set_identity_session_cookie(response, settings, request, token)
+    return {"code": 0, "message": "ok", "data": {
+        "token": token, "did": did, "walletAddress": session.wallet_id, "wallet_address": session.wallet_id,
+        "expires_at": session.expires_at, "auth_type": session.auth_type,
+    }}
+
+
+@router.post("/auth/passport/sessions")
+async def public_auth_passport_session(request: Request) -> dict[str, object]:
+    settings = Settings()
+    callback = settings.identity_redirect_uri or auth_service(settings).resolve_base_url(request).rstrip("/") + "/api/v1/public/auth/passport/callback"
+    try:
+        return identity_auth_service(settings).create_passkey_session(callback)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/auth/passport/sessions/{session_id}")
+async def public_auth_passport_status(session_id: str, request: Request, response: Response) -> dict[str, object]:
+    settings = Settings()
+    try:
+        payload, session = identity_auth_service(settings).poll_passkey_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.get("status") == "completed" and session is not None:
+        token = auth_service(settings).encode_session(session)
+        set_identity_session_cookie(response, settings, request, token)
+    return payload
+
+
+@router.get("/auth/passport/callback")
+async def public_auth_passport_callback(code: str, state: str) -> Response:
+    settings = Settings()
+    try:
+        identity_auth_service(settings).callback(state, code)
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    return Response(
+        content="<!doctype html><html><meta charset='utf-8'><title>登录已确认</title><body>登录已确认，请返回应用。<script>try{window.close()}catch(e){}</script></body></html>",
+        media_type="text/html",
+    )
 
 
 @router.get("/agents", response_model=AgentListResponse)

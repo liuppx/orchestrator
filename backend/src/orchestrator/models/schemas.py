@@ -29,6 +29,39 @@ class AuthChallengeView(BaseModel):
     expires_at: str
 
 
+class IdentityLoginSessionView(BaseModel):
+    session_id: str
+    request_id: str | None = None
+    nonce: str | None = None
+    audience: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    verify_url: str | None = None
+    expires_at: str
+    poll_interval: int = 2
+
+
+class IdentityLoginSessionEnvelope(BaseModel):
+    code: int = 0
+    message: str = "ok"
+    data: IdentityLoginSessionView
+
+
+class IdentityLoginResult(BaseModel):
+    token: str
+    did: str
+    walletAddress: str | None = None
+    wallet_address: str | None = None
+    expires_at: str
+    refresh_expires_at: str | None = None
+    auth_type: str = "wallet_identity"
+
+
+class IdentityLoginResultEnvelope(BaseModel):
+    code: int = 0
+    message: str = "ok"
+    data: IdentityLoginResult
+
+
 class AuthSessionVerifyRequest(BaseModel):
     wallet_id: str
     chain_id: str | None = None
@@ -43,6 +76,7 @@ class AuthSessionView(BaseModel):
     wallet_id: str
     chain_id: str | None = None
     auth_type: str = "wallet_plugin"
+    did: str | None = None
     issued_at: str
     expires_at: str
     ucan_session: dict[str, Any] | list[Any] | str | int | float | bool | None = None

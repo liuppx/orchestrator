@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { CheckCircle2, LoaderCircle, Wallet } from 'lucide-react'
+import { ArrowUpRight, CheckCircle2, Fingerprint, LoaderCircle, Wallet } from 'lucide-react'
+import { getProvider, loginWithWalletIdentity } from '@yeying-community/web3-bs'
 
-import { walletLogin } from '../../platform/auth/mutations'
+import { api, ApiError } from '../../platform/core/api'
 import { usePlatformSession } from '../../platform/auth/queries'
 import { shortWallet } from '../../platform/auth/web3'
-import { ApiError } from '../../platform/core/api'
+
+type LoginMode = 'wallet' | 'passport'
+type PassportLoginSession = { session_id: string; verify_url: string; poll_interval?: number }
+type PassportLoginStatus = { status: string; message?: string }
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -21,6 +25,8 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { session, isLoading, refetch } = usePlatformSession()
   const [submitting, setSubmitting] = useState(false)
+  const [mode, setMode] = useState<LoginMode>('wallet')
+  const [passportSession, setPassportSession] = useState<PassportLoginSession | null>(null)
   const [statusText, setStatusText] = useState<string | null>(null)
   const [errorText, setErrorText] = useState<string | null>(null)
 
@@ -30,12 +36,40 @@ export function LoginPage() {
     }
   }, [navigate, session])
 
+  useEffect(() => {
+    if (!passportSession || mode !== 'passport') return
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await api<PassportLoginStatus>(`/api/v1/public/auth/passport/sessions/${encodeURIComponent(passportSession.session_id)}`)
+        if (result.status === 'completed') {
+          window.clearInterval(timer)
+          setPassportSession(null)
+          setStatusText('身份已确认，正在进入运行概览...')
+          await refetch()
+          await navigate({ to: '/overview', replace: true })
+        } else if (result.status === 'failed' || result.status === 'expired') {
+          window.clearInterval(timer)
+          setErrorText(result.message || (result.status === 'expired' ? '通行证登录已过期，请重新发起。' : '通行证身份验证失败。'))
+          setStatusText(null)
+        }
+      } catch (error) {
+        window.clearInterval(timer)
+        setErrorText(errorMessage(error))
+        setStatusText(null)
+      }
+    }, Math.max(1000, (passportSession.poll_interval ?? 2) * 1000))
+    return () => window.clearInterval(timer)
+  }, [mode, navigate, passportSession, refetch])
+
   async function handleLogin() {
     setSubmitting(true)
     setErrorText(null)
-    setStatusText('正在请求钱包签名...')
+    setPassportSession(null)
+    setStatusText('正在连接钱包身份...')
     try {
-      await walletLogin()
+      const provider = await getProvider({ preferYeYing: true, timeoutMs: 3000 })
+      if (!provider) throw new Error('未检测到夜莺钱包或兼容钱包扩展。')
+      await loginWithWalletIdentity({ baseUrl: '/api/v1/public/auth', sessionPath: 'identity/login/session?avatar=0', provider, storeToken: false })
       setStatusText('登录成功，正在进入运行概览...')
       await refetch()
       await navigate({ to: '/overview', replace: true })
@@ -45,6 +79,40 @@ export function LoginPage() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function handlePassportLogin() {
+    if (submitting) return
+    setSubmitting(true)
+    setErrorText(null)
+    setStatusText('正在创建夜莺通行证登录请求...')
+    const popup = window.open('about:blank', 'orchestrator-passkey-login')
+    if (!popup) {
+      setErrorText('浏览器阻止了验证窗口，请允许弹出窗口后重试。')
+      setStatusText(null)
+      setSubmitting(false)
+      return
+    }
+    try {
+      const next = await api<PassportLoginSession>('/api/v1/public/auth/passport/sessions', { method: 'POST' })
+      setPassportSession(next)
+      popup.location.assign(next.verify_url)
+      setStatusText('请在夜莺通行证页面完成验证。')
+    } catch (error) {
+      popup.close()
+      setErrorText(errorMessage(error))
+      setStatusText(null)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function selectMode(next: LoginMode) {
+    if (next === mode) return
+    setMode(next)
+    setPassportSession(null)
+    setErrorText(null)
+    setStatusText(null)
   }
 
   return (
@@ -62,12 +130,28 @@ export function LoginPage() {
       </section>
       <section className="login-panel" aria-labelledby="login-title">
         <h1 id="login-title">登录运行控制台</h1>
-        <p>使用 YeYing 社区钱包验证身份。</p>
+        <p>通过钱包身份或夜莺通行证安全登录。</p>
         <div className="login-actions">
-          <button type="button" onClick={() => void handleLogin()} disabled={submitting || isLoading} className="login-primary">
-            {submitting || isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-            {submitting ? '等待签名' : '使用钱包登录'}
-          </button>
+          <div className="login-mode-switch" role="group" aria-label="选择登录方式">
+            <button type="button" onClick={() => selectMode('wallet')} aria-pressed={mode === 'wallet'} className={mode === 'wallet' ? 'active' : ''}>
+              <Wallet className="h-4 w-4" /> 钱包身份
+            </button>
+            <button type="button" onClick={() => selectMode('passport')} aria-pressed={mode === 'passport'} className={mode === 'passport' ? 'active' : ''}>
+              <Fingerprint className="h-4 w-4" /> 夜莺通行证
+            </button>
+          </div>
+          {mode === 'wallet' ? (
+            <button type="button" onClick={() => void handleLogin()} disabled={submitting || isLoading} className="login-primary">
+              {submitting || isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+              {submitting ? '等待钱包确认' : '连接钱包并继续'}
+            </button>
+          ) : (
+            <button type="button" onClick={() => void handlePassportLogin()} disabled={submitting || isLoading} className="login-primary">
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+              {passportSession ? '重新发起通行证登录' : '打开夜莺通行证'}
+            </button>
+          )}
+          {mode === 'passport' && passportSession && <a className="login-passport-link" href={passportSession.verify_url} target="_blank" rel="noreferrer">验证页没有打开？在新窗口继续 <ArrowUpRight className="h-4 w-4" /></a>}
           <button type="button" onClick={() => void refetch()} className="login-secondary">刷新会话</button>
         </div>
         {statusText && <div className="login-status" role="status"><CheckCircle2 className="h-4 w-4" />{statusText}</div>}

@@ -22,6 +22,7 @@ from eth_account.messages import encode_defunct
 from orchestrator.app import create_app
 from orchestrator.config import Settings
 from orchestrator.db import init_database
+from orchestrator.models import AuthSessionView
 from orchestrator.storage import RuntimeNode, sessions_for
 
 
@@ -242,6 +243,45 @@ class PublicAuthApiTest(unittest.TestCase):
         status, _, _ = self.request("/api/v1/public/agents")
         self.assertEqual(status, 401)
 
+    def test_wallet_identity_api_uses_web3_bs_envelope_and_sets_cookie(self) -> None:
+        self.start_server("never", use_database=True)
+        session = AuthSessionView(
+            wallet_id="0x1111111111111111111111111111111111111111",
+            auth_type="wallet_identity",
+            did="did:yeying:wid_12345678901234567890123456789012",
+            issued_at=datetime.now(timezone.utc).isoformat(),
+            expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        )
+        with patch("orchestrator.api.public.identity_auth_service") as identity_service:
+            identity_service.return_value.create_wallet_session.return_value = {
+                "session_id": "session-test",
+                "request_id": "request-test",
+                "audience": "https://orchestrator.example.com",
+                "nonce": "nonce-test",
+                "scopes": ["identity.basic", "identity.wallet", "identity.username", "identity.email"],
+                "expires_at": session.expires_at,
+            }
+            status, created, _ = self.request(
+                "/api/v1/public/auth/identity/login/session?avatar=0",
+                method="POST",
+                payload={},
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "orchestrator.example.com"},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(created["code"], 0)
+            self.assertEqual(created["data"]["session_id"], "session-test")
+
+            identity_service.return_value.verify_wallet_session.return_value = (session, session.did)
+            status, verified, response_headers = self.request(
+                "/api/v1/public/auth/identity/login/verify",
+                method="POST",
+                payload={"session_id": "session-test", "request_id": "request-test", "presentation": {}},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(verified["code"], 0)
+            self.assertEqual(verified["data"]["did"], session.did)
+            self.assertEqual(verified["data"]["walletAddress"], session.wallet_id)
+            self.assertTrue(any(key.lower() == "set-cookie" and "hub_session=" in value for key, value in response_headers))
     def test_secure_cookie_header_when_enabled(self) -> None:
         self.start_server("always")
         account = Account.create()
