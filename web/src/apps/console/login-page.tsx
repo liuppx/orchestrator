@@ -152,7 +152,6 @@ export function LoginPage() {
             </button>
           )}
           {mode === 'passport' && passportSession && <a className="login-passport-link" href={passportSession.verify_url} target="_blank" rel="noreferrer">验证页没有打开？在新窗口继续 <ArrowUpRight className="h-4 w-4" /></a>}
-          <button type="button" onClick={() => void refetch()} className="login-secondary">刷新会话</button>
         </div>
         {statusText && <div className="login-status" role="status"><CheckCircle2 className="h-4 w-4" />{statusText}</div>}
         {errorText && <div className="login-error" role="alert">{errorText}</div>}
