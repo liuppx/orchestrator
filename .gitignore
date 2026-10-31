@@ -242,3 +242,4 @@ agents/custom/trader/config/strategies.yaml
 .project-lifecycle-*.json
 .project-execution-*.json
 .project-execution-*/
+.playwright-cli
