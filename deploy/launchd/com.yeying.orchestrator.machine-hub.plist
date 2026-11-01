@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.yeying.orchestrator.machine-hub</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__REPO_ROOT__/scripts/run_machine_hub.sh</string>
+		<string>--openclaw</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__REPO_ROOT__/backend</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__USER_HOME__/.local/bin:__USER_HOME__/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>__USER_HOME__/Library/Logs/orchestrator-machine-hub.log</string>
+	<key>StandardErrorPath</key>
+	<string>__USER_HOME__/Library/Logs/orchestrator-machine-hub.error.log</string>
+</dict>
+</plist>

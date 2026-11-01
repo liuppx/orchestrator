@@ -12,7 +12,7 @@ cp backend/.env.template backend/.env
 
 本地和生产使用同一文件路径，通过不同的值区分环境。后端启动和迁移从该文件读取服务配置。不要在仓库根目录或 `config/` 目录再维护一份 Hub/OpenClaw 服务 env；根层旧配置已移除。模板内按用途解释了监听、PostgreSQL、运行目录、Router、钱包会话、Runtime Node、管理员/Project/worker 凭证和部署 worker 参数。Machine Hub 凭证不配置为 env 明文：管理员通过内部 Hub credential API 签发，数据库只保存摘要；客户端从权限为 `0600` 的本地凭证文件加载 token。Hub 凭证 API 需要已迁移的 PostgreSQL。
 
-Machine Hub 客户端日常使用 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、`HUB_CLIENT_STATE_DB` 和 OpenClaw 本地状态/目录配置，不依赖 `HUB_DATABASE_URL`。启用 DingTalk 实例创建时，在 Hub 配置 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置对应 Fernet key；每台机器必须使用独立 key，用于加密持久化命令中的 DingTalk 密钥。其他实例创建字段以类型化 JSON 传输。Hub 状态库必须持久化在本机，客户端启动会创建同路径的文件锁，同一 Hub ID 只能运行一个客户端进程。只有首次显式执行 `--migrate-openclaw-state` 时，才临时需要指向旧实例数据的 `HUB_DATABASE_URL`。`orchestrator-machine-hub --openclaw` 支持真实 OpenClaw 的创建、发现、检查、启动、停止、删除、模型更新、日志、诊断和 WhatsApp 配对；systemd/launchd 安装、升级/回滚和硬取消仍未完成，不应视为已完成生产部署。Codex 与 Claude Runtime Adapter 仍未实现；`--simulate` 只用于协议联调。
+Machine Hub 客户端日常使用 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、`HUB_CLIENT_STATE_DB` 和 OpenClaw 本地状态/目录配置，不依赖 `HUB_DATABASE_URL`。启用 DingTalk 实例创建时，在 Hub 配置 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置对应 Fernet key；每台机器必须使用独立 key，用于加密持久化命令中的 DingTalk 密钥。其他实例创建字段以类型化 JSON 传输。Hub 状态库必须持久化在本机，客户端启动会创建同路径的文件锁，同一 Hub ID 只能运行一个客户端进程。只有首次显式执行 `--migrate-openclaw-state` 时，才临时需要指向旧实例数据的 `HUB_DATABASE_URL`。`orchestrator-machine-hub --openclaw` 支持真实 OpenClaw 的创建、发现、检查、启动、停止、删除、模型更新、日志、诊断和 WhatsApp 配对；`--check --openclaw` 可在不联系 Backend、不创建本地状态文件的前提下验证本地配置。仓库附带 systemd user 和 macOS LaunchAgent 模板及 runner，覆盖基础安装和常驻运行；自动升级/回滚、硬取消、隔离和多机生产验收仍未完成。Codex 与 Claude Runtime Adapter 仍未实现；`--simulate` 只用于协议联调。
 
 ## 独立 Agent 配置
 
