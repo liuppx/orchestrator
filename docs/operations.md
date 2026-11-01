@@ -102,7 +102,7 @@ uv run orchestrator-machine-hub --migrate-openclaw-state
 
 该命令只复制实例元数据与本地密钥，不删除源数据库或运行目录。复制完成后从日常 Hub 配置中移除 `HUB_DATABASE_URL`。`--simulate` 仍只上报虚构实例用于协议联调；`--once` 可执行一轮同步后退出。Hub 本地 SQLite 数据包含 inbox/outbox cursor，不能删除或在重装后重建，否则可能无法续接 Backend 的事件 sequence。
 
-当前 Hub 客户端每轮只领取一条命令。执行超过租约续期间隔的操作会在后台周期性续租；Backend 明确拒绝续租或租约接近到期且无法恢复连接时，客户端会请求 Adapter 取消并等待本机操作结束，再将命令结果记为 `unknown`。OpenClaw 当前生命周期操作在调用边界检查取消信号，底层 `openclaw` shell 命令尚未实现硬超时或强制中断，因此仍需补充受控子进程取消/清理与守护进程恢复测试，之后才能视为具备生产恢复能力。
+当前 Hub 客户端每轮只领取一条命令。执行超过租约续期间隔的操作会在后台周期性续租；Backend 明确拒绝续租，或续租连接持续失败并接近租约到期时，客户端会向 Adapter 请求取消并等待本机操作停止，再将结果记为 `unknown`。每条 OpenClaw CLI 子进程默认最多运行 300 秒，可通过 `HUB_OPENCLAW_COMMAND_TIMEOUT_SECONDS` 调整；取消或超时会先向子进程组发送 SIGTERM，3 秒后仍未退出则发送 SIGKILL。Hub 收到 SIGTERM/SIGINT 时也会请求当前 Adapter 取消。子进程或 Hub 在外部副作用发生后中断时，重启恢复会先检查本地实例状态；无法证明结果时保持 `unknown`，不会盲目重放配对操作。该处理覆盖 Hub 管理的子进程组，但无法保证清理主动脱离进程组的后代，也不能证明外部服务端副作用是否完成；自动升级/回滚、完整进程隔离和多机生产验收仍需单独完成。
 
 ## 健康检查
 
