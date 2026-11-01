@@ -112,7 +112,7 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 | 现状 | 目标变化 |
 |---|---|
 | `RuntimeNode` 保存旧节点机器元数据；另有 Hub 服务端表、协议客户端和 OpenClaw 启停 Adapter | 增加 Hub 安装/升级流程、凭证轮换和远程生产端到端验证 |
-| Runtime API 和旧 `/agent` Messenger API 的 OpenClaw 实例操作已通过 Hub command；结果/事件回写控制面目录 | 增加 Hub 安装/升级流程、单进程锁、凭证轮换、强制取消和远程生产验收；把 profile/config 以更细的 typed operations 建模 |
+| Runtime API 和旧 `/agent` Messenger API 的 OpenClaw 实例操作已通过 Hub command；结果/事件回写控制面目录 | 增加 Hub 安装/升级流程、凭证治理、强制取消和远程生产验收；把 profile/config 以更细的 typed operations 建模 |
 | `runtime_providers.py` 只报告本机 OpenClaw 检测能力 | 转为 Hub 上报的 Adapter 能力目录；Backend 展示每个 Hub 的 Runtime inventory |
 | 生命周期 worker 管理 Node Registry 社区应用发布包，属于另一条执行链路 | 明确与 Runtime Hub 协议的边界；如迁入 Hub，应另定任务类型与安全约束，不把两套协议混为一谈 |
 | Public Runtime API 以当前钱包 owner 和本机实例为中心 | 逐步改为 Backend 管理的 Hub/Instance 资源和授权命令，不允许浏览器直连 Hub |
@@ -121,7 +121,7 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 
 1. 已建立 Runtime/Hub/Instance/命令/事件消息模型、JSON Schema、凭证管理 API、服务端持久化、SQLite inbox/outbox 客户端和 OpenClaw typed Adapter。
 2. Runtime API 和旧 Messenger API 的创建、删除、模型配置、启停、日志、诊断及配对已由 Backend 校验钱包 owner 后下发 Hub 命令；Hub 本地 JSON/Secret Store 和 Backend 控制面目录已分离，Hub 日常运行不依赖 PostgreSQL；同机真实 Backend HTTP 与 Hub 客户端闭环、DingTalk 密文持久化通过测试。
-3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；前端已展示 Hub inventory/观测数据，客户端已加入本地进程锁；下一步完善凭证轮换、Hub 安装升级和远程多机验收。
+3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；前端已展示 Hub inventory/观测数据，客户端已加入本地进程锁和凭证文件热加载；下一步完善凭证签发/撤销运维、Hub 安装升级和远程多机验收。
 4. 按真实 CLI 能力接入 Codex 与 Claude Code Adapter，验证 workspace 隔离、审批、日志脱敏、执行取消和离线恢复；逐步开放对应能力。
 5. 补齐多用户 RBAC、Hub 凭证治理、告警、升级/回滚、备份恢复及多机故障演练，再开放多机器生产管理。
 
