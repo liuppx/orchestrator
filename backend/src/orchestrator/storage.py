@@ -30,6 +30,77 @@ class RuntimeNode(Base):
     updated_at = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MachineHub(Base):
+    __tablename__ = "machine_hubs"
+
+    id = mapped_column(String(128), primary_key=True)
+    status = mapped_column(String(32), nullable=False, default="pending")
+    protocol_version = mapped_column(String(16), nullable=False, default="1.0")
+    metadata_json = mapped_column(JSON_VALUE, nullable=False, default=dict)
+    inventory_revision = mapped_column(Integer, nullable=False, default=0)
+    inventory_json = mapped_column(JSON_VALUE, nullable=False, default=dict)
+    last_seen_at = mapped_column(DateTime(timezone=True))
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MachineHubCredential(Base):
+    __tablename__ = "machine_hub_credentials"
+    __table_args__ = (Index("ix_machine_hub_credentials_hub_status", "hub_id", "status"),)
+
+    id = mapped_column(String(36), primary_key=True)
+    hub_id = mapped_column(String(128), ForeignKey("machine_hubs.id", ondelete="CASCADE"), nullable=False)
+    token_digest = mapped_column(String(64), nullable=False, unique=True)
+    status = mapped_column(String(32), nullable=False, default="active")
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at = mapped_column(DateTime(timezone=True))
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at = mapped_column(DateTime(timezone=True))
+
+
+class MachineHubCommand(Base):
+    __tablename__ = "machine_hub_commands"
+    __table_args__ = (
+        UniqueConstraint("hub_id", "idempotency_key", name="uq_machine_hub_commands_hub_idempotency"),
+        Index("ix_machine_hub_commands_hub_status_expiry", "hub_id", "status", "expires_at"),
+    )
+
+    id = mapped_column(String(36), primary_key=True)
+    hub_id = mapped_column(String(128), ForeignKey("machine_hubs.id", ondelete="CASCADE"), nullable=False)
+    target_instance_id = mapped_column(String(128), nullable=False)
+    runtime_type = mapped_column(String(64), nullable=False)
+    operation = mapped_column(String(64), nullable=False)
+    idempotency_key = mapped_column(String(128), nullable=False)
+    desired_revision = mapped_column(Integer, nullable=False)
+    attempt = mapped_column(Integer, nullable=False, default=0)
+    trace_id = mapped_column(String(128), nullable=False)
+    issued_at = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_expires_at = mapped_column(DateTime(timezone=True))
+    status = mapped_column(String(32), nullable=False, default="pending")
+    payload_json = mapped_column(JSON_VALUE, nullable=True)
+    result_json = mapped_column(JSON_VALUE, nullable=False, default=dict)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MachineHubEvent(Base):
+    __tablename__ = "machine_hub_events"
+    __table_args__ = (
+        UniqueConstraint("hub_id", "sequence", name="uq_machine_hub_events_hub_sequence"),
+        UniqueConstraint("hub_id", "event_id", name="uq_machine_hub_events_hub_event_id"),
+    )
+
+    id = mapped_column(String(36), primary_key=True)
+    hub_id = mapped_column(String(128), ForeignKey("machine_hubs.id", ondelete="CASCADE"), nullable=False)
+    event_id = mapped_column(String(36), nullable=False)
+    sequence = mapped_column(Integer, nullable=False)
+    event_type = mapped_column(String(64), nullable=False)
+    payload = mapped_column(JSON_VALUE, nullable=False, default=dict)
+    occurred_at = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AgentInstance(Base):
     __tablename__ = "agent_instances"
     __table_args__ = (UniqueConstraint("node_id", "port", name="uq_agent_instances_node_port"),)
@@ -42,7 +113,7 @@ class AgentInstance(Base):
     workspace_ref = mapped_column(String(1024), nullable=False)
     kind = mapped_column(String(64), nullable=False, default="agent")
     name = mapped_column(String(255), nullable=False, default="")
-    port = mapped_column(Integer, nullable=False)
+    port = mapped_column(Integer, nullable=True)
     desired_state = mapped_column(String(32), nullable=False, default="stopped")
     observed_state = mapped_column(String(32), nullable=False, default="unknown")
     revision = mapped_column(Integer, nullable=False, default=1)

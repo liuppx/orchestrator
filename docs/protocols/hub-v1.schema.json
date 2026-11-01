@@ -1,0 +1,1716 @@
+{
+  "$defs": {
+    "HubCommandEventV1": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "command_id": {
+          "format": "uuid",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "desired_revision": {
+          "minimum": 1,
+          "title": "Desired Revision",
+          "type": "integer"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Z0-9][A-Z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "observed_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeObservedState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/HubCommandPhase"
+        },
+        "progress_percent": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Progress Percent"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "instance_deleted": "#/$defs/HubOpenClawDeletedResultV1",
+                  "instance_diagnosis": "#/$defs/HubOpenClawDiagnoseResultV1",
+                  "instance_logs": "#/$defs/HubOpenClawLogsResultV1",
+                  "model_updated": "#/$defs/HubOpenClawModelResultV1",
+                  "whatsapp_pair_started": "#/$defs/HubOpenClawPairResultV1"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/HubOpenClawDeletedResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawModelResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawPairResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawLogsResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawDiagnoseResultV1"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "type": {
+          "const": "command",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "event_id",
+        "sequence",
+        "occurred_at",
+        "command_id",
+        "desired_revision",
+        "attempt",
+        "phase"
+      ],
+      "title": "HubCommandEventV1",
+      "type": "object"
+    },
+    "HubCommandIssueRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "create_payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "desired_revision": {
+          "minimum": 1,
+          "title": "Desired Revision",
+          "type": "integer"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/HubCommandOperation"
+        },
+        "operation_payload": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "diagnose": "#/$defs/HubOpenClawDiagnosePayloadV1",
+                  "get_logs": "#/$defs/HubOpenClawLogsPayloadV1",
+                  "update_model": "#/$defs/HubOpenClawModelPayloadV1"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/HubOpenClawModelPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawLogsPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawDiagnosePayloadV1"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Payload"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "target_instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Target Instance Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_instance_id",
+        "runtime_type",
+        "operation",
+        "idempotency_key",
+        "desired_revision",
+        "trace_id",
+        "expires_at"
+      ],
+      "title": "HubCommandIssueRequestV1",
+      "type": "object"
+    },
+    "HubCommandLeaseRenewalRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt"
+      ],
+      "title": "HubCommandLeaseRenewalRequestV1",
+      "type": "object"
+    },
+    "HubCommandLeaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "command_id": {
+          "format": "uuid",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "lease_expires_at": {
+          "format": "date-time",
+          "title": "Lease Expires At",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "server_time": {
+          "format": "date-time",
+          "title": "Server Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "command_id",
+        "attempt",
+        "server_time",
+        "lease_expires_at"
+      ],
+      "title": "HubCommandLeaseV1",
+      "type": "object"
+    },
+    "HubCommandOperation": {
+      "enum": [
+        "create_instance",
+        "inspect_instance",
+        "start_instance",
+        "stop_instance",
+        "restart_instance",
+        "delete_instance",
+        "update_instance_model",
+        "get_instance_logs",
+        "diagnose_instance",
+        "pair_whatsapp"
+      ],
+      "title": "HubCommandOperation",
+      "type": "string"
+    },
+    "HubCommandPhase": {
+      "enum": [
+        "accepted",
+        "running",
+        "succeeded",
+        "failed",
+        "rejected",
+        "unknown"
+      ],
+      "title": "HubCommandPhase",
+      "type": "string"
+    },
+    "HubCommandPollResponseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/HubCommandV1"
+          },
+          "maxItems": 50,
+          "title": "Commands",
+          "type": "array"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "server_time": {
+          "format": "date-time",
+          "title": "Server Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "server_time",
+        "commands"
+      ],
+      "title": "HubCommandPollResponseV1",
+      "type": "object"
+    },
+    "HubCommandReceiptV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "format": "uuid",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "rejected",
+            "unknown",
+            "expired",
+            "superseded"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "command_id",
+        "status",
+        "issued_at",
+        "expires_at"
+      ],
+      "title": "HubCommandReceiptV1",
+      "type": "object"
+    },
+    "HubCommandV1": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "command_id": {
+          "format": "uuid",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "create_payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "desired_revision": {
+          "minimum": 1,
+          "title": "Desired Revision",
+          "type": "integer"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/HubCommandOperation"
+        },
+        "operation_payload": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "diagnose": "#/$defs/HubOpenClawDiagnosePayloadV1",
+                  "get_logs": "#/$defs/HubOpenClawLogsPayloadV1",
+                  "update_model": "#/$defs/HubOpenClawModelPayloadV1"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/HubOpenClawModelPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawLogsPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubOpenClawDiagnosePayloadV1"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Payload"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "target_instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Target Instance Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_id",
+        "target_instance_id",
+        "runtime_type",
+        "operation",
+        "desired_revision",
+        "attempt",
+        "trace_id",
+        "issued_at",
+        "expires_at"
+      ],
+      "title": "HubCommandV1",
+      "type": "object"
+    },
+    "HubCredentialIssueRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_in_seconds": {
+          "default": 7776000,
+          "maximum": 31536000,
+          "minimum": 300,
+          "title": "Expires In Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "HubCredentialIssueRequestV1",
+      "type": "object"
+    },
+    "HubCredentialIssuedV1": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_id": {
+          "format": "uuid",
+          "title": "Credential Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "hub_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Hub Id",
+          "type": "string"
+        },
+        "token": {
+          "maxLength": 256,
+          "minLength": 32,
+          "title": "Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "credential_id",
+        "hub_id",
+        "token",
+        "expires_at"
+      ],
+      "title": "HubCredentialIssuedV1",
+      "type": "object"
+    },
+    "HubCredentialViewV1": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "credential_id": {
+          "format": "uuid",
+          "title": "Credential Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "last_used_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Used At"
+        },
+        "revoked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revoked At"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "expired",
+            "revoked"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "credential_id",
+        "status",
+        "created_at",
+        "expires_at"
+      ],
+      "title": "HubCredentialViewV1",
+      "type": "object"
+    },
+    "HubEventBatchAckV1": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_at": {
+          "format": "date-time",
+          "title": "Accepted At",
+          "type": "string"
+        },
+        "accepted_through_sequence": {
+          "minimum": 0,
+          "title": "Accepted Through Sequence",
+          "type": "integer"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "accepted_through_sequence",
+        "accepted_at"
+      ],
+      "title": "HubEventBatchAckV1",
+      "type": "object"
+    },
+    "HubEventBatchRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sequence": {
+          "minimum": 0,
+          "title": "After Sequence",
+          "type": "integer"
+        },
+        "events": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "command": "#/$defs/HubCommandEventV1",
+                "runtime_state": "#/$defs/HubRuntimeStateEventV1"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/HubCommandEventV1"
+              },
+              {
+                "$ref": "#/$defs/HubRuntimeStateEventV1"
+              }
+            ]
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Events",
+          "type": "array"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "after_sequence",
+        "events"
+      ],
+      "title": "HubEventBatchRequestV1",
+      "type": "object"
+    },
+    "HubHeartbeatRequestV1": {
+      "additionalProperties": false,
+      "properties": {
+        "adapters": {
+          "items": {
+            "$ref": "#/$defs/HubRuntimeAdapterV1"
+          },
+          "maxItems": 64,
+          "title": "Adapters",
+          "type": "array"
+        },
+        "architecture": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Architecture",
+          "type": "string"
+        },
+        "hostname": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Hostname",
+          "type": "string"
+        },
+        "hub_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Hub Version",
+          "type": "string"
+        },
+        "operating_system": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Operating System",
+          "type": "string"
+        },
+        "operating_system_version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operating System Version"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "resources": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxProperties": 64,
+          "propertyNames": {
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "title": "Resources",
+          "type": "object"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "hub_version",
+        "hostname",
+        "operating_system",
+        "architecture"
+      ],
+      "title": "HubHeartbeatRequestV1",
+      "type": "object"
+    },
+    "HubHeartbeatResponseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command_poll_interval_seconds": {
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Command Poll Interval Seconds",
+          "type": "integer"
+        },
+        "heartbeat_interval_seconds": {
+          "maximum": 300,
+          "minimum": 5,
+          "title": "Heartbeat Interval Seconds",
+          "type": "integer"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "server_time": {
+          "format": "date-time",
+          "title": "Server Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "server_time",
+        "heartbeat_interval_seconds",
+        "command_poll_interval_seconds"
+      ],
+      "title": "HubHeartbeatResponseV1",
+      "type": "object"
+    },
+    "HubInventoryAckV1": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_at": {
+          "format": "date-time",
+          "title": "Accepted At",
+          "type": "string"
+        },
+        "accepted_revision": {
+          "minimum": 1,
+          "title": "Accepted Revision",
+          "type": "integer"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "accepted_revision",
+        "accepted_at"
+      ],
+      "title": "HubInventoryAckV1",
+      "type": "object"
+    },
+    "HubInventorySnapshotV1": {
+      "additionalProperties": false,
+      "properties": {
+        "captured_at": {
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/HubRuntimeInstanceV1"
+          },
+          "maxItems": 4096,
+          "title": "Instances",
+          "type": "array"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "revision",
+        "captured_at",
+        "instances"
+      ],
+      "title": "HubInventorySnapshotV1",
+      "type": "object"
+    },
+    "HubOpenClawCreatePayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "dingtalk_client_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dingtalk Client Id"
+        },
+        "dingtalk_client_secret_envelope": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dingtalk Client Secret Envelope"
+        },
+        "kind": {
+          "enum": [
+            "whatsapp",
+            "dingtalk"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "title": "HubOpenClawCreatePayloadV1",
+      "type": "object"
+    },
+    "HubOpenClawDeletedResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxProperties": 8,
+          "title": "Archived",
+          "type": "object"
+        },
+        "instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "instance_deleted",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "instance_id"
+      ],
+      "title": "HubOpenClawDeletedResultV1",
+      "type": "object"
+    },
+    "HubOpenClawDiagnosePayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_recover": {
+          "default": false,
+          "title": "Auto Recover",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "diagnose",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "HubOpenClawDiagnosePayloadV1",
+      "type": "object"
+    },
+    "HubOpenClawDiagnoseResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_recover_message": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Recover Message"
+        },
+        "auto_recover_triggered": {
+          "title": "Auto Recover Triggered",
+          "type": "boolean"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "gateway_reachable": {
+          "title": "Gateway Reachable",
+          "type": "boolean"
+        },
+        "gateway_target": {
+          "maxLength": 256,
+          "title": "Gateway Target",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "instance_diagnosis",
+          "title": "Kind",
+          "type": "string"
+        },
+        "last_inbound_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Inbound At"
+        },
+        "last_outbound_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Outbound At"
+        },
+        "no_api_key_error_seen": {
+          "title": "No Api Key Error Seen",
+          "type": "boolean"
+        },
+        "pair_hint": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pair Hint"
+        },
+        "pair_status": {
+          "maxLength": 32,
+          "title": "Pair Status",
+          "type": "string"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pid"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "profile": {
+          "maxLength": 128,
+          "title": "Profile",
+          "type": "string"
+        },
+        "recommended_action": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recommended Action"
+        },
+        "router_api_key_present": {
+          "title": "Router Api Key Present",
+          "type": "boolean"
+        },
+        "status": {
+          "maxLength": 32,
+          "title": "Status",
+          "type": "string"
+        },
+        "transport_established": {
+          "title": "Transport Established",
+          "type": "boolean"
+        },
+        "whatsapp_connected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Whatsapp Connected"
+        },
+        "whatsapp_last_error": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Whatsapp Last Error"
+        },
+        "whatsapp_running": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Whatsapp Running"
+        },
+        "workload_type": {
+          "maxLength": 64,
+          "title": "Workload Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "profile",
+        "workload_type",
+        "status",
+        "port",
+        "gateway_target",
+        "gateway_reachable",
+        "pair_status",
+        "transport_established",
+        "router_api_key_present",
+        "no_api_key_error_seen",
+        "auto_recover_triggered",
+        "evidence"
+      ],
+      "title": "HubOpenClawDiagnoseResultV1",
+      "type": "object"
+    },
+    "HubOpenClawLogsPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "get_logs",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lines": {
+          "default": 120,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Lines",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "HubOpenClawLogsPayloadV1",
+      "type": "object"
+    },
+    "HubOpenClawLogsResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "events_log": {
+          "maxLength": 32768,
+          "title": "Events Log",
+          "type": "string"
+        },
+        "events_log_path": {
+          "const": "logs/events.jsonl",
+          "title": "Events Log Path",
+          "type": "string"
+        },
+        "gateway_log": {
+          "maxLength": 32768,
+          "title": "Gateway Log",
+          "type": "string"
+        },
+        "gateway_log_path": {
+          "const": "logs/gateway.log",
+          "title": "Gateway Log Path",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "instance_logs",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pair_hint": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pair Hint"
+        },
+        "pair_log": {
+          "maxLength": 32768,
+          "title": "Pair Log",
+          "type": "string"
+        },
+        "pair_log_path": {
+          "const": "logs/pair.log",
+          "title": "Pair Log Path",
+          "type": "string"
+        },
+        "pair_qr_ascii": {
+          "maxLength": 8192,
+          "title": "Pair Qr Ascii",
+          "type": "string"
+        },
+        "pair_status": {
+          "maxLength": 32,
+          "title": "Pair Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "gateway_log",
+        "pair_log",
+        "pair_qr_ascii",
+        "pair_status",
+        "gateway_log_path",
+        "pair_log_path",
+        "events_log_path",
+        "events_log"
+      ],
+      "title": "HubOpenClawLogsResultV1",
+      "type": "object"
+    },
+    "HubOpenClawModelPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "update_model",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "model"
+      ],
+      "title": "HubOpenClawModelPayloadV1",
+      "type": "object"
+    },
+    "HubOpenClawModelResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "model_updated",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "model"
+      ],
+      "title": "HubOpenClawModelResultV1",
+      "type": "object"
+    },
+    "HubOpenClawPairResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "whatsapp_pair_started",
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "pair_log": {
+          "const": "logs/pair.log",
+          "title": "Pair Log",
+          "type": "string"
+        },
+        "pair_pid": {
+          "minimum": 1,
+          "title": "Pair Pid",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "message",
+        "pair_pid",
+        "pair_log"
+      ],
+      "title": "HubOpenClawPairResultV1",
+      "type": "object"
+    },
+    "HubRuntimeAdapterV1": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        }
+      },
+      "required": [
+        "runtime_type",
+        "adapter_version"
+      ],
+      "title": "HubRuntimeAdapterV1",
+      "type": "object"
+    },
+    "HubRuntimeInstanceV1": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "observed_state": {
+          "$ref": "#/$defs/RuntimeObservedState"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "process_id": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process Id"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        },
+        "workload_type": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workload Type"
+        }
+      },
+      "required": [
+        "instance_id",
+        "runtime_type",
+        "observed_state",
+        "observed_at"
+      ],
+      "title": "HubRuntimeInstanceV1",
+      "type": "object"
+    },
+    "HubRuntimeStateEventV1": {
+      "additionalProperties": false,
+      "properties": {
+        "desired_revision": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Desired Revision"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "observed_state": {
+          "$ref": "#/$defs/RuntimeObservedState"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "type": {
+          "const": "runtime_state",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "event_id",
+        "sequence",
+        "occurred_at",
+        "instance_id",
+        "runtime_type",
+        "observed_state"
+      ],
+      "title": "HubRuntimeStateEventV1",
+      "type": "object"
+    },
+    "RuntimeObservedState": {
+      "enum": [
+        "unknown",
+        "not_installed",
+        "stopped",
+        "starting",
+        "running",
+        "busy",
+        "degraded",
+        "error",
+        "unsupported"
+      ],
+      "title": "RuntimeObservedState",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/HubHeartbeatRequestV1"
+    },
+    {
+      "$ref": "#/$defs/HubHeartbeatResponseV1"
+    },
+    {
+      "$ref": "#/$defs/HubInventorySnapshotV1"
+    },
+    {
+      "$ref": "#/$defs/HubInventoryAckV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandIssueRequestV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/HubCredentialIssueRequestV1"
+    },
+    {
+      "$ref": "#/$defs/HubCredentialIssuedV1"
+    },
+    {
+      "$ref": "#/$defs/HubCredentialViewV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandPollResponseV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandLeaseRenewalRequestV1"
+    },
+    {
+      "$ref": "#/$defs/HubCommandLeaseV1"
+    },
+    {
+      "$ref": "#/$defs/HubEventBatchRequestV1"
+    },
+    {
+      "$ref": "#/$defs/HubEventBatchAckV1"
+    }
+  ],
+  "title": "Orchestrator Hub Protocol v1.0"
+}

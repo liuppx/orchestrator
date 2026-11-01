@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pydantic import Field
@@ -23,6 +24,18 @@ class Settings(BaseSettings):
     applications_dir: Path | None = Field(default=None, alias="HUB_APPLICATIONS_DIR")
     application_config_dir: Path | None = Field(default=None, alias="HUB_APPLICATION_CONFIG_DIR")
     database_url: str | None = Field(default=None, alias="HUB_DATABASE_URL")
+    hub_id: str = Field(default="", alias="HUB_ID")
+    hub_version: str = Field(default="0.1.0", alias="HUB_CLIENT_VERSION")
+    hub_backend_url: str = Field(default="", alias="HUB_BACKEND_URL")
+    hub_credential_file: Path | None = Field(default=None, alias="HUB_CREDENTIAL_FILE")
+    hub_state_db: Path | None = Field(default=None, alias="HUB_CLIENT_STATE_DB")
+    hub_openclaw_state_file: Path | None = Field(default=None, alias="HUB_OPENCLAW_STATE_FILE")
+    hub_openclaw_runtime_dir: Path | None = Field(default=None, alias="HUB_OPENCLAW_RUNTIME_DIR")
+    hub_openclaw_instances_root: Path | None = Field(default=None, alias="HUB_OPENCLAW_INSTANCES_ROOT")
+    hub_openclaw_secret_store_dir: Path | None = Field(default=None, alias="HUB_OPENCLAW_SECRET_STORE_DIR")
+    hub_command_encryption_key: str | None = Field(default=None, alias="HUB_COMMAND_ENCRYPTION_KEY")
+    hub_command_encryption_keys: str = Field(default="{}", alias="HUB_COMMAND_ENCRYPTION_KEYS")
+    hub_request_timeout_seconds: int = Field(default=15, alias="HUB_CLIENT_REQUEST_TIMEOUT_SECONDS", gt=0, le=300)
     node_id: str = Field(default="local", alias="HUB_NODE_ID")
     runtime_node_tokens: str = Field(default="{}", alias="HUB_RUNTIME_NODE_TOKENS")
     runtime_node_offline_after_seconds: int = Field(default=90, alias="HUB_RUNTIME_NODE_OFFLINE_AFTER_SECONDS", gt=0, le=3600)
@@ -81,9 +94,52 @@ class Settings(BaseSettings):
         return self.application_config_dir or (self.repo_root / "runtime" / "app-config")
 
     @property
+    def resolved_hub_client_dir(self) -> Path:
+        hub_id = self.hub_id or "unconfigured"
+        return self.runtime_dir.joinpath("hub-client", hub_id) if self.runtime_dir else self.repo_root / "runtime" / "hub-client" / hub_id
+
+    @property
+    def resolved_hub_credential_file(self) -> Path:
+        return self.hub_credential_file or (self.resolved_hub_client_dir / "credential")
+
+    @property
+    def resolved_hub_state_db(self) -> Path:
+        return self.hub_state_db or (self.resolved_hub_client_dir / "state.sqlite3")
+
+    @property
+    def resolved_hub_openclaw_state_file(self) -> Path:
+        return self.hub_openclaw_state_file or (self.resolved_hub_client_dir / "openclaw-state.json")
+
+    @property
+    def resolved_hub_openclaw_runtime_dir(self) -> Path:
+        return self.hub_openclaw_runtime_dir or (self.resolved_hub_client_dir / "openclaw-runtime")
+
+    @property
+    def resolved_hub_openclaw_instances_root(self) -> Path:
+        return self.hub_openclaw_instances_root or self.resolved_instances_root
+
+    @property
+    def resolved_hub_openclaw_secret_store_dir(self) -> Path:
+        return self.hub_openclaw_secret_store_dir or (self.resolved_hub_client_dir / "openclaw-secrets")
+
+    @property
     def ui_dir(self) -> Path:
         return self.repo_root / "web" / "dist"
 
     @property
     def parsed_model_allowlist(self) -> list[str]:
         return [item.strip() for item in self.model_allowlist.split(",") if item.strip()]
+
+    @property
+    def parsed_hub_command_encryption_keys(self) -> dict[str, str]:
+        try:
+            parsed = json.loads(self.hub_command_encryption_keys)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            str(hub_id): key
+            for hub_id, key in parsed.items()
+            if isinstance(hub_id, str) and isinstance(key, str) and key
+        }

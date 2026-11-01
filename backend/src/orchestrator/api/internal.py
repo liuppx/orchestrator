@@ -2,15 +2,34 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
+from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 
 from orchestrator.config import Settings
 from orchestrator.models import RuntimeNodeHeartbeatRequest, RuntimeNodeListResponse
+from orchestrator.protocols.hub_v1 import (
+    HubCommandIssueRequestV1,
+    HubCommandLeaseV1,
+    HubCommandLeaseRenewalRequestV1,
+    HubCommandPollResponseV1,
+    HubCredentialIssueRequestV1,
+    HubEventBatchRequestV1,
+    HubHeartbeatRequestV1,
+    HubInventorySnapshotV1,
+)
 from orchestrator.services.nodes import NODE_ID_PATTERN, RuntimeNodeService
+from orchestrator.services.hubs import (
+    HubAuthenticationError,
+    HubConflictError,
+    HubNotFoundError,
+    MachineHubService,
+)
 from orchestrator.services.runtime import AgentRuntimeState
 
 router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
+HUB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def runtime_state(settings: Settings) -> AgentRuntimeState:
@@ -88,6 +107,37 @@ def require_runtime_node_token(settings: Settings, node_id: str, authorization: 
         raise HTTPException(status_code=401, detail="invalid node agent credentials")
 
 
+def machine_hub_service(settings: Settings) -> MachineHubService:
+    try:
+        return MachineHubService(settings.database_url)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def authenticate_machine_hub(
+    service: MachineHubService,
+    hub_id: str,
+    authorization: str | None,
+) -> None:
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    provided = authorization[len("Bearer ") :].strip() if authorization and authorization.startswith("Bearer ") else ""
+    try:
+        service.authenticate(hub_id, provided)
+    except HubAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def map_hub_service_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HubNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, HubConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=503, detail=str(exc))
+
+
 def require_worker_attempt(value: int | None) -> int:
     if value is None or value < 1:
         raise HTTPException(status_code=400, detail="X-Worker-Attempt is required")
@@ -147,6 +197,151 @@ async def internal_runtime_nodes(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ok(nodes.model_dump())
+
+
+@router.post("/hubs/{hub_id}/credentials")
+async def internal_issue_hub_credential(
+    hub_id: str,
+    payload: HubCredentialIssueRequestV1,
+    response: Response,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_admin_token(settings, authorization)
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    try:
+        credential = machine_hub_service(settings).issue_credential(hub_id, payload.expires_in_seconds)
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return credential.model_dump(mode="json")
+
+
+@router.post("/hubs/{hub_id}/credentials/{credential_id}/revoke")
+async def internal_revoke_hub_credential(
+    hub_id: str,
+    credential_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_admin_token(settings, authorization)
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    try:
+        machine_hub_service(settings).revoke_credential(hub_id, credential_id)
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+    return {"credential_id": credential_id, "status": "revoked"}
+
+
+@router.get("/hubs/{hub_id}/credentials")
+async def internal_list_hub_credentials(
+    hub_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_admin_token(settings, authorization)
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    try:
+        credentials = machine_hub_service(settings).list_credentials(hub_id)
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+    return {"items": [item.model_dump(mode="json") for item in credentials]}
+
+
+@router.post("/hubs/{hub_id}/heartbeat")
+async def internal_hub_heartbeat(
+    hub_id: str,
+    payload: HubHeartbeatRequestV1,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    service = machine_hub_service(settings)
+    authenticate_machine_hub(service, hub_id, authorization)
+    try:
+        return service.heartbeat(hub_id, payload).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+
+
+@router.put("/hubs/{hub_id}/inventory")
+async def internal_hub_inventory(
+    hub_id: str,
+    payload: HubInventorySnapshotV1,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    service = machine_hub_service(settings)
+    authenticate_machine_hub(service, hub_id, authorization)
+    try:
+        return service.update_inventory(hub_id, payload).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+
+
+@router.post("/hubs/{hub_id}/commands", status_code=202)
+async def internal_issue_hub_command(
+    hub_id: str,
+    payload: HubCommandIssueRequestV1,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_admin_token(settings, authorization)
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    try:
+        return machine_hub_service(settings).issue_command(hub_id, payload).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+
+
+@router.get("/hubs/{hub_id}/commands", response_model=HubCommandPollResponseV1)
+async def internal_poll_hub_commands(
+    hub_id: str,
+    limit: int = Query(default=10, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    service = machine_hub_service(settings)
+    authenticate_machine_hub(service, hub_id, authorization)
+    try:
+        return service.claim_commands(hub_id, limit).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+
+
+@router.post("/hubs/{hub_id}/commands/{command_id}/lease", response_model=HubCommandLeaseV1)
+async def internal_renew_hub_command_lease(
+    hub_id: str,
+    command_id: UUID,
+    payload: HubCommandLeaseRenewalRequestV1,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    service = machine_hub_service(settings)
+    authenticate_machine_hub(service, hub_id, authorization)
+    try:
+        return service.renew_command_lease(hub_id, str(command_id), payload.attempt).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
+
+
+@router.post("/hubs/{hub_id}/events")
+async def internal_hub_events(
+    hub_id: str,
+    payload: HubEventBatchRequestV1,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    service = machine_hub_service(settings)
+    authenticate_machine_hub(service, hub_id, authorization)
+    try:
+        return service.accept_events(hub_id, payload).model_dump(mode="json")
+    except (HubNotFoundError, HubConflictError, RuntimeError) as exc:
+        raise map_hub_service_error(exc) from exc
 
 
 async def handle_lifecycle(action: str, request: Request, x_yeying_instance: str | None) -> dict:
