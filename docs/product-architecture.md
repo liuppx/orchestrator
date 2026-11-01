@@ -1,6 +1,6 @@
 # Orchestrator 产品定位与领域架构
 
-更新时间：2026-10-28
+更新时间：2026-10-31
 范围：面向需要在自有节点部署、运行和维护异构 Agent Runtime 的社区与小型平台团队。
 
 ## 产品定位
@@ -10,31 +10,37 @@ Orchestrator 是 Agent Runtime 的控制面，不是 Agent 本体、Agent 开发
 建议的核心对象关系：
 
 ```text
-Organization / Project
-  └── Runtime Node
-       └── Runtime Provider (OpenClaw, Nanobot, ...)
-            └── Runtime Instance
-                 └── Workload (Agent / application)
-                      └── Tools (including MCP servers)
+Web Workbench -> Backend / Control Plane
+                    ├── Organizations / Projects / Policies
+                    └── Machine Registry
+                         └── Machine Hub (one per managed machine)
+                              └── Runtime Adapter (Codex CLI, Claude Code CLI, OpenClaw, ...)
+                                   └── Runtime Instance
+                                        └── Workspace / Session / Task (when supported)
+                                             └── Tools (including MCP servers)
 ```
 
-- **Runtime Node**：运行 Agent Runtime 的主机或受信任执行节点，报告心跳、容量、版本和可用执行器。它不同于 YeYing Node 社区制品发布中心。
+- **Backend / Control Plane**：中心工作台和 API，管理身份/权限、Hub、实例目录、期望状态、命令、观测状态、事件、审计和调度策略。
+- **Machine Hub**：安装在每台受管机器上的常驻服务，主动连接 Backend，负责本机 Runtime 发现、Adapter 调用、状态采集和离线事件缓存。Hub 不是 Browser 或 Backend 上的一个页面。
+- **Runtime Node**：当前数据库中的机器登记对象；目标上由对应的 Hub 持续上报身份、版本、容量和能力。现有心跳接收 API 并不等于 Hub 客户端或远程控制已交付。
+- **Runtime Provider**：现有 API/控制台对可纳管 Runtime 类型及能力目录的命名；目标中由 Hub 上报，具体本机操作由 Runtime Adapter 实现。
+- **Runtime Adapter**：运行在 Hub 内、面向某类 Runtime 的显式适配器和能力集合，不等同于一个进程。Codex CLI、Claude Code CLI 与 OpenClaw 的管理能力须按实际接口分别验证。
 - **YeYing Node / Node Registry**：社区应用制品的登记、审核、版本、签名和下载服务，不是 Agent Runtime 的运行主机。
-- **Runtime Provider**：由 adapter 实现的管理协议和能力集合，不等同于一个进程。
+- **Model Provider**：OpenAI、Anthropic 等推理服务及其凭证，与 Runtime Provider/Runtime 类型分开建模。
 - **Runtime Instance**：某个 Runtime Node 上具有独立配置、目录、资源和生命周期的运行时实例。
 - **Workload**：运行在实例中的 Agent、社区应用或业务工作负载。
 - **Tool / MCP Server**：Agent 在运行期调用的外部能力。Orchestrator 可以登记其配置引用，但 MCP Server 本身不是 Runtime Provider。
 - **Lifecycle Task**：部署、升级、启停和卸载等异步操作的请求、租约、重试与结果。
 - **Runtime Event / Audit Event**：状态观测、操作者动作和执行结果的时间序列证据。
 
-期望状态与观测状态必须分开保存。用户点击启动只表示 `desired_state=running`；只有 adapter/Runtime Node 给出可验证的健康证据，才能把 `observed_state` 标记为 running。启动失败仍保留期望状态和错误证据，供重试、诊断与告警使用。
+期望状态与观测状态必须分开保存。用户点击启动只表示 `desired_state=running`；只有 Hub Adapter 给出可验证的健康证据，才能把 `observed_state` 标记为 running。启动失败仍保留期望状态和错误证据，供重试、诊断与告警使用。
 
 ## 核心流程
 
-1. **连接节点**：注册 Runtime Node 身份，校验节点凭证与能力，接收初始心跳；离线节点不能被当作可部署目标。
-2. **检测运行时**：Runtime Provider adapter 报告版本、能力、约束和健康状态；未适配的运行时只显示“未接入”，不允许伪装成可用。
-3. **创建工作负载**：选择发布版本、目标 Runtime/Runtime Node 与经过权限校验的配置引用；将不可变输入记录为 Lifecycle Task。
-4. **执行与收敛**：Runtime worker 领取带 fencing 的任务，验证发布来源和制品，再执行部署；控制面持续比较期望状态与观测状态。
+1. **连接机器**：为每台机器注册 Hub 身份，校验凭证与 Hub 版本；Hub 主动连接 Backend 并上报心跳和初始 inventory。
+2. **检测运行时**：Hub 内的 Runtime Adapter 报告版本、能力、约束和健康状态；未适配的 Runtime 只显示“未接入”，不允许伪装成可用。
+3. **创建工作负载**：选择目标 Hub/Runtime Instance 与经过权限校验的配置引用；将不可变输入记录为命令或 Lifecycle Task。
+4. **执行与收敛**：Backend 下发带幂等 ID、期望修订号、fencing attempt 和过期时间的类型化命令；Hub 执行并回报结果，控制面比较期望与观测状态。
 5. **日常运维**：按状态筛选实例，查看最近事件、日志和健康检查；启停、升级、回滚等动作生成审计事件并返回可追踪的任务结果。
 6. **故障恢复**：错误显示具体失败阶段、证据和下一步；可重试操作有幂等键、租约、退避和最大重试限制，破坏性操作需要确认与权限检查。
 
@@ -81,25 +87,25 @@ Orchestrator 处于几个成熟类别的交叉处，不应照搬单一产品的�
                  通用基础设施/执行
 ```
 
-当前 Orchestrator 的实际位置仍更靠近“单机 OpenClaw 运维工具”，而非图中的目标位置。虽然已有 Runtime Node 心跳接收接口，但仓库还没有配套 Node Agent、远程实例管理或多节点调度；主要差距还包括异构 Runtime adapter、声明式状态收敛、统一事件/审计流和可扩展的健康探针。
+当前 Orchestrator 的实际位置仍更靠近“单机 OpenClaw 运维工具”，而非图中的目标位置。Machine Hub 协议已有真实 Backend HTTP 闭环；Runtime API 和旧 Messenger `/agent` 的 OpenClaw 实例操作由 Hub 执行，Hub 本机实例/密钥状态已与 Backend 控制面数据库分开，日常 Hub 不依赖 PostgreSQL。主要差距还包括可部署 Hub 服务、工作台 Hub/实例授权、声明式状态收敛、统一事件/审计视图和可扩展健康探针。
 
 ## 当前实现核对
 
 - 已有 PostgreSQL 持久化模型：`RuntimeNode`、`AgentInstance`、版本化配置、生命周期任务、任务事件、审计事件与 Warehouse outbox；任务支持幂等、lease、attempt fencing 和 retry schedule。
-- 已有 OpenClaw 本机进程创建、独立 profile/端口/工作目录、启停、日志、WhatsApp 配对及诊断；消息和交易工作台属于领域应用，不是 Runtime Provider。
+- 已有 OpenClaw 本机进程创建、独立 profile/端口/工作目录、启停、删除、模型配置、日志、WhatsApp 配对及诊断；这些实例操作通过 Machine Hub Adapter 执行，Backend 只维护 owner/catalog 镜像；消息和交易工作台属于领域应用，不是 Runtime Provider。
 - 已有 Node Registry 发布制品读取、checksum/digest、Ed25519 验签、受限 Compose 生成、健康探测和单节点升级回滚。
-- 已有 Runtime Node 心跳接收 API：按节点 ID 使用独立 Bearer 凭证写入 `runtime_nodes`，并可按心跳超时动态判断在线状态；本机 OpenClaw 实例持久化仍可创建本地节点记录。当前没有随仓库交付的心跳 Agent 客户端、节点控制台或远程 Runtime 生命周期操作，多节点部署还未完成。
-- 当前 dashboard 只暴露 OpenClaw 本机 connector；Nanobot、Hermes、MCP Server 没有可操作的通用 adapter。产品不可宣称已经支持“任意 runtime 纳管”。
+- 已有 Runtime Node 心跳 API、Machine Hub 服务端协议、本地 SQLite inbox/outbox 客户端，以及 OpenClaw 的本机状态 Adapter；Runtime API 和旧 Messenger `/agent` 的创建、删除、模型配置、启停、日志、诊断、配对及 inventory 回报已通过真实 Backend HTTP API 做端到端测试，DingTalk 凭证以目标 Hub 专属密文传递。仍没有生产 Hub 安装/升级流程、工作台 Hub 控制台、组织级 RBAC、Codex/Claude Adapter 或远程多机生产验收。
+- 当前 dashboard 只展示最近在线 Hub 上报的 OpenClaw 能力；Nanobot、Hermes、MCP Server 没有可操作的通用 adapter。产品不可宣称已经支持“任意 runtime 纳管”。
 - 现有控制台仍使用钱包登录和 owner 隔离，尚无组织/项目/RBAC 管理后台、多租户管理员、密钥轮换界面或正式审计浏览器。
 - 生命周期任务 worker 已支持安全的首期签名应用部署，但静态端口、多 Project 路由、配额、告警和备份恢复仍是上线前事项。
 
 ## 重构原则与阶段
 
-1. **先统一领域和控制台**：Runtime Provider / Instance / desired-vs-observed 状态 / Capability 作为公共契约；业务应用工作台下沉到应用域。当前已开始通过 `/runtime/*` API 和实例控制台落实这一层。
-2. **交付 Node Agent 闭环**：服务端已有 Runtime Node 基于节点级静态凭证的心跳和能力接收、在线超时判定；后续补凭证签发/轮换治理、受控客户端、任务 pull、事件上报和端到端联调。不得通过公共浏览器 API 直接远程执行 shell。
-3. **adapter contract**：定义 `discover / create / start / stop / restart / inspect / logs / health / delete` 能力，逐个接入 OpenClaw、Nanobot；Hermes 需先确认其官方运行/配置协议。没有完整实现的 capability 要明确返回 unsupported。
-4. **任务和审计闭环**：统一 OpenClaw 本机动作与 Node 安装任务的状态/事件模型；配置版本、权限、幂等、任务超时、重试、回滚、审计和告警策略保持一致。
-5. **生产就绪**：RBAC/租户边界、密钥库、可观测性、配额和调度策略、灾备演练、迁移回滚、节点安全基线及多节点压力测试。
+1. **稳定协议与服务端**：JSON Schema 和首期内部 API 已建立；仍需明确向后兼容规则、客户端 enrollment 与运行中凭证轮换。目标边界见[Hub 架构 ADR](hub-architecture-adr.md)。
+2. **完成 Hub 客户端交付机制**：协议客户端和长命令租约机制已有测试，Runtime API 的 OpenClaw 创建/启停已走 Hub 命令；仍需补凭证轮换、单进程锁、守护进程、升级/恢复及强制取消流程。
+3. **完成 OpenClaw 迁移**：Runtime API 和旧 Messenger `/agent` 的创建/删除、模型配置、启停、日志、配对和诊断接口已通过 Hub 命令；下一步让工作台实例状态统一以 Hub inventory/观测事件为准，并补齐前端操作状态。再按真实接口验证 Codex CLI、Claude Code CLI；未实现能力明确返回 unsupported。
+4. **统一任务与审计闭环**：区分 Runtime 命令和 Node Registry 社区应用生命周期任务，再统一幂等、超时、重试、回滚、审计和告警策略。
+5. **生产就绪**：RBAC/租户边界、凭证轮换、可观测性、配额和调度策略、灾备演练、迁移回滚、节点安全基线及多节点压力测试。
 
 ## 来源与置信度
 

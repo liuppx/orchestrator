@@ -1,5 +1,7 @@
 # Agent Runtime Protocol
 
+> 本文描述 YeYing Project 到 Orchestrator 的社区应用安装/升级/卸载协议，以及对应的单节点生命周期 worker。文中现存 Runtime Node 心跳和 Node Runtime Agent 都属于这条应用部署链路，不等同于 Backend 与每台机器 Hub 之间的 Runtime 控制协议；Hub 的目标架构和协议边界见[Hub 架构 ADR](hub-architecture-adr.md)。两类任务可能最终由同一台机器上的 Hub 执行，但身份、命令模型和能力验收需分别定义。
+
 ## 1. 架构定位
 
 社区智能体、AI 应用和 MCP 工具的控制与制品流转边界如下：

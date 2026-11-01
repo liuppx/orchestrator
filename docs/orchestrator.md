@@ -7,12 +7,18 @@ Orchestrator 管理 Agent Runtime、运行节点、工作负载和生命周期�
 ## 当前能力
 
 - 钱包身份验证及用户实例隔离。
-- 本机 OpenClaw Runtime 实例创建、启停、日志、WhatsApp 配对和诊断。
+- Runtime API 和旧 Messenger `/agent` API 的 OpenClaw 创建、删除、模型配置、启停、日志、配对和诊断均由 Hub Adapter 经命令协议执行；Backend 只保留 owner/catalog、授权和结果镜像。
 - PostgreSQL 持久化运行数据，支持生命周期任务租约、幂等、attempt fencing、重试和 outbox。
 - 从 Node Registry 获取经过签名校验的发布制品，并通过独立 worker 执行受限的单节点应用生命周期。
 - 交易、消息属于业务应用工作台；MCP Server 属于 Agent 可调用工具，不应显示为 Runtime。
 
 当前控制台仅确认本机 OpenClaw Provider。Nanobot、Hermes、远程节点心跳/调度、RBAC 管理后台和统一的生产审计台尚未完成，不应宣称已经支持任意 Runtime 或多节点生产编排。
+
+## 目标架构
+
+产品方向是中心 Backend + 每台受管机器一个 Hub：Web 工作台只访问 Backend；Hub 主动通过版本化 HTTPS 协议拉取经过授权的类型化命令，并上报本机 Runtime inventory、观测状态和事件。Backend 管身份、期望状态、命令、审计与跨机器视图；Hub 管本机 Runtime Adapter 与执行。Codex CLI、Claude Code CLI、OpenClaw 的能力分别验证，模型供应商单独建模。
+
+服务端已实现首期 Hub 凭证签发/撤销、心跳、inventory、类型化命令和事件 API；OpenClaw 本机 JSON/Secret Store Adapter 支持全套已迁移的 Messenger 实例操作，运行时控制台和旧 API 只经 Hub 命令执行，不会在 Hub 离线时直连 OpenClaw。它还不是生产 Hub 部署：工作台 Hub 管理、用户级 RBAC、守护进程安装/升级、硬取消和远程多机验收尚未交付。当前 Runtime Node 心跳 API 仍是另一套旧接收端。目标、协议约束及迁移验收见[Hub 架构 ADR](hub-architecture-adr.md)。
 
 ## 启动与运维
 

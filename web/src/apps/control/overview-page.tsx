@@ -72,7 +72,7 @@ export function OverviewPage() {
             <div className="provider-mark"><Cpu className="h-5 w-5" /></div>
             <div className="provider-copy">
               <strong>{provider.name}</strong>
-              <span>{provider.management_mode === 'local-process' ? '本机进程' : provider.management_mode} · {provider.capabilities.length} 项管理能力</span>
+              <span>{provider.management_mode === 'machine-hub' ? '本机 Hub' : provider.management_mode} · {provider.capabilities.length} 项管理能力</span>
             </div>
             <Badge variant={provider.availability === 'configured' ? 'success' : 'muted'}>
               {provider.availability === 'configured' ? '已配置' : '未配置'}
