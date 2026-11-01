@@ -29,6 +29,7 @@ from orchestrator.hub_client.simulated import SimulatedAdapter
 from orchestrator.models import AuthSessionView, BotInstanceCreateRequest
 from orchestrator.storage import AgentInstance, MachineHub, MachineHubCommand, RuntimeNode, sessions_for
 from orchestrator.services.openclaw import OpenClawRuntimeService
+from orchestrator.services.hubs import MachineHubService
 
 
 def _free_port() -> int:
@@ -530,9 +531,15 @@ class PublicAuthApiTest(unittest.TestCase):
         assert isinstance(legacy_created, dict)
         self.assertEqual(legacy_created["detail"], "Machine Hub is offline")
 
+        MachineHubService(self.settings.database_url).issue_credential("runtime-console-hub", 3600)
+
         legacy_source = OpenClawRuntimeService(
-            OpenClawAdapter._config_from_settings(self.settings, database_url=self.settings.database_url)
+            OpenClawAdapter._config_from_settings(
+                self.settings,
+                database_url=self.settings.database_url,
+            )
         )
+        legacy_source.cfg.node_id = "runtime-console-hub"
         legacy_source.create_instance(
             BotInstanceCreateRequest(kind="whatsapp", name="Console Bot"),
             owner_wallet=owner.address,
@@ -545,6 +552,17 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertEqual(created["runtime_type"], "openclaw")
         self.assertEqual(created["desired_state"], "stopped")
         self.assertEqual(created["observed_state"], "created")
+
+        status, owner_hubs, _ = self.request("/api/v1/public/runtime/hubs", headers=owner_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(owner_hubs, dict)
+        self.assertEqual(owner_hubs["total"], 1)
+        self.assertEqual(owner_hubs["items"][0]["id"], "runtime-console-hub")
+        self.assertEqual(owner_hubs["items"][0]["status"], "pending")
+        status, other_hubs, _ = self.request("/api/v1/public/runtime/hubs", headers=other_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(other_hubs, dict)
+        self.assertEqual(other_hubs["items"], [])
 
         status, denied_action, _ = self.request(
             f"/api/v1/public/runtime/instances/{created['id']}/actions/start",

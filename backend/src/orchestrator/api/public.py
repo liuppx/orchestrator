@@ -52,6 +52,8 @@ from orchestrator.models import (
     RuntimeInstanceCreateRequest,
     RuntimeInstanceListResponse,
     RuntimeInstanceView,
+    RuntimeHubListResponse,
+    RuntimeHubView,
     RuntimeProviderListResponse,
     VersionResponse,
 )
@@ -139,7 +141,7 @@ async def dispatch_runtime_instance_action(
         raise HTTPException(status_code=404, detail="instance not found")
     return RuntimeInstanceActionResponse(
         message=f"{action} completed by Machine Hub",
-        instance=runtime_instance_view(result),
+        instance=runtime_instance_view_with_hub(MachineHubService(settings.database_url), result),
     )
 
 
@@ -247,6 +249,19 @@ def runtime_instance_view(instance: BotInstanceView) -> RuntimeInstanceView:
         updated_at=instance.updated_at,
         capabilities=capabilities,
     )
+
+
+def runtime_instance_view_with_hub(
+    hub_service: MachineHubService,
+    instance: BotInstanceView,
+) -> RuntimeInstanceView:
+    view = runtime_instance_view(instance)
+    metadata = hub_service.runtime_instance_metadata(instance.id)
+    if metadata:
+        return view.model_copy(update=metadata)
+    return view
+
+
 def workspace_adapter_for_agent(settings: Settings, agent_key: str) -> AgentWorkspaceAdapter:
     if agent_key == "messenger":
         from orchestrator.adapters.messenger import MessengerWorkspaceAdapter
@@ -306,13 +321,30 @@ async def public_runtime_instances(request: Request) -> RuntimeInstanceListRespo
         item for item in service.list_instances().items
         if owner_matches_wallet(item.owner_wallet, session.wallet_id)
     ]
-    items = [runtime_instance_view(item) for item in instances]
+    hub_service = MachineHubService(settings.database_url)
+    items = [runtime_instance_view_with_hub(hub_service, item) for item in instances]
     return RuntimeInstanceListResponse(
         items=items,
         total=len(items),
         running=sum(1 for item in items if item.observed_state == "running"),
         stopped=sum(1 for item in items if item.observed_state in {"created", "stopped"}),
         attention=sum(1 for item in items if item.observed_state in {"error", "unknown"}),
+    )
+
+
+@router.get("/runtime/hubs", response_model=RuntimeHubListResponse)
+async def public_runtime_hubs(request: Request) -> RuntimeHubListResponse:
+    session = require_session(request)
+    settings = Settings()
+    require_hub_catalog(settings)
+    hubs = MachineHubService(settings.database_url).list_runtime_hubs(owner_id=session.wallet_id)
+    items = [RuntimeHubView.model_validate(item) for item in hubs]
+    return RuntimeHubListResponse(
+        items=items,
+        total=len(items),
+        online=sum(1 for item in items if item.status == "online"),
+        offline=sum(1 for item in items if item.status == "offline"),
+        unknown=sum(1 for item in items if item.status not in {"online", "offline"}),
     )
 
 
@@ -337,7 +369,7 @@ async def public_create_runtime_instance(
         ),
         session,
     )
-    return runtime_instance_view(instance)
+    return runtime_instance_view_with_hub(MachineHubService(settings.database_url), instance)
 
 
 async def create_openclaw_instance_via_hub(

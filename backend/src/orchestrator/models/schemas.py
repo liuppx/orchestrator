@@ -246,6 +246,20 @@ class RuntimeInstanceView(BaseModel):
     created_at: str
     updated_at: str
     capabilities: list[str]
+    hub_id: str | None = None
+    hub_status: str = "unknown"
+    hub_last_seen_at: str | None = None
+    latest_command_status: str | None = None
+    latest_command_operation: str | None = None
+    latest_command_updated_at: str | None = None
+
+
+class RuntimeHubView(BaseModel):
+    id: str
+    status: str
+    last_seen_at: str | None
+    adapter_count: int
+    instance_count: int
 
 
 class RuntimeInstanceListResponse(BaseModel):
@@ -254,6 +268,14 @@ class RuntimeInstanceListResponse(BaseModel):
     running: int
     stopped: int
     attention: int
+
+
+class RuntimeHubListResponse(BaseModel):
+    items: list[RuntimeHubView]
+    total: int
+    online: int
+    offline: int
+    unknown: int
 
 
 class RuntimeInstanceActionResponse(BaseModel):

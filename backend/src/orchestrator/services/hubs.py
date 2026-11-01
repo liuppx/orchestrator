@@ -504,6 +504,62 @@ class MachineHubService:
         except SQLAlchemyError as exc:
             raise RuntimeError("instance catalog storage is unavailable") from exc
 
+    def runtime_instance_metadata(self, instance_id: str) -> dict[str, object] | None:
+        """Return the Hub and most recent command mirror for a catalog instance."""
+        try:
+            with self.sessions() as session:
+                instance = session.get(AgentInstance, instance_id)
+                if instance is None:
+                    return None
+                hub = session.get(MachineHub, instance.node_id)
+                latest = session.scalar(
+                    select(MachineHubCommand)
+                    .where(
+                        MachineHubCommand.hub_id == instance.node_id,
+                        MachineHubCommand.target_instance_id == instance_id,
+                    )
+                    .order_by(MachineHubCommand.created_at.desc())
+                    .limit(1)
+                )
+                return {
+                    "hub_id": instance.node_id,
+                    "hub_status": hub.status if hub is not None else "unknown",
+                    "hub_last_seen_at": _utc(hub.last_seen_at).isoformat() if hub and hub.last_seen_at else None,
+                    "latest_command_status": latest.status if latest is not None else None,
+                    "latest_command_operation": latest.operation if latest is not None else None,
+                    "latest_command_updated_at": _utc(latest.updated_at).isoformat() if latest is not None else None,
+                }
+        except SQLAlchemyError as exc:
+            raise RuntimeError("instance catalog storage is unavailable") from exc
+
+    def list_runtime_hubs(self, owner_id: str | None = None) -> list[dict[str, object]]:
+        try:
+            with self.sessions() as session:
+                hub_query = select(MachineHub).order_by(MachineHub.id.asc())
+                if owner_id is not None:
+                    hub_query = hub_query.join(AgentInstance, AgentInstance.node_id == MachineHub.id).where(
+                        AgentInstance.owner_id == owner_id
+                    ).distinct()
+                hubs = session.scalars(hub_query).all()
+                counts = {
+                    hub_id: count
+                    for hub_id, count in session.execute(
+                        select(AgentInstance.node_id, func.count()).group_by(AgentInstance.node_id)
+                    ).all()
+                }
+                return [
+                    {
+                        "id": hub.id,
+                        "status": hub.status,
+                        "last_seen_at": _utc(hub.last_seen_at).isoformat() if hub.last_seen_at else None,
+                        "adapter_count": len((hub.metadata_json or {}).get("adapters", [])),
+                        "instance_count": int(counts.get(hub.id, 0)),
+                    }
+                    for hub in hubs
+                ]
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Hub catalog storage is unavailable") from exc
+
     def is_online(self, hub_id: str, offline_after_seconds: int = 90) -> bool:
         now = datetime.now(UTC)
         try:
