@@ -147,6 +147,12 @@ export type RuntimeInstance = {
   created_at: string
   updated_at: string
   capabilities: string[]
+  hub_id: string | null
+  hub_status: string
+  hub_last_seen_at: string | null
+  latest_command_status: string | null
+  latest_command_operation: string | null
+  latest_command_updated_at: string | null
 }
 
 export type RuntimeInstanceListResponse = {
@@ -155,6 +161,22 @@ export type RuntimeInstanceListResponse = {
   running: number
   stopped: number
   attention: number
+}
+
+export type RuntimeHub = {
+  id: string
+  status: string
+  last_seen_at: string | null
+  adapter_count: number
+  instance_count: number
+}
+
+export type RuntimeHubListResponse = {
+  items: RuntimeHub[]
+  total: number
+  online: number
+  offline: number
+  unknown: number
 }
 
 export type BotInstanceLogsResponse = {

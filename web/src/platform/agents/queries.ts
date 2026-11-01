@@ -9,6 +9,7 @@ import type {
   AgentTypesResponse,
   AgentWorkspaceSummary,
   RuntimeInstanceListResponse,
+  RuntimeHubListResponse,
   RuntimeProviderListResponse,
 } from '../core/types'
 
@@ -63,6 +64,14 @@ export function useRuntimeInstances() {
   return useQuery({
     queryKey: ['runtime', 'instances'],
     queryFn: () => api<RuntimeInstanceListResponse>('/api/v1/public/runtime/instances'),
+    refetchInterval: 10000,
+  })
+}
+
+export function useRuntimeHubs() {
+  return useQuery({
+    queryKey: ['runtime', 'hubs'],
+    queryFn: () => api<RuntimeHubListResponse>('/api/v1/public/runtime/hubs'),
     refetchInterval: 10000,
   })
 }
