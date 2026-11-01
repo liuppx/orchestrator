@@ -570,6 +570,55 @@ class HttpHubTransportTest(unittest.TestCase):
         self.assertEqual(received[0][1], f"Bearer {'x' * 32}")
         self.assertEqual(received[0][2]["protocol_version"], "1.0")
 
+    def test_http_transport_reloads_rotated_credential_for_each_request(self) -> None:
+        received: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                received.append(self.headers.get("Authorization", ""))
+                response = {
+                    "protocol_version": "1.0",
+                    "server_time": datetime.now(UTC).isoformat(),
+                    "heartbeat_interval_seconds": 30,
+                    "command_poll_interval_seconds": 5,
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        current = {"token": "x" * 32}
+        transport = HttpHubTransport(
+            f"http://127.0.0.1:{server.server_address[1]}",
+            "machine-http-rotation",
+            lambda: current["token"],
+        )
+        payload = HubHeartbeatRequestV1(
+            protocol_version="1.0",
+            hub_version="0.1.0",
+            hostname="http-test-host",
+            operating_system="linux",
+            architecture="x86_64",
+            adapters=[],
+        )
+        transport.heartbeat(payload)
+        current["token"] = "y" * 32
+        transport.heartbeat(payload)
+
+        self.assertEqual(received, [f"Bearer {'x' * 32}", f"Bearer {'y' * 32}"])
+
     def test_http_transport_renews_command_lease(self) -> None:
         command_id = uuid4()
         received: list[tuple[str, dict]] = []

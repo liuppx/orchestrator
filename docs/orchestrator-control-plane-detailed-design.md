@@ -178,7 +178,7 @@ Runtime Node 运维接口：
 
 ### 尚未实现或尚未生产验收
 
-1. 可部署/守护的 Hub 服务进程、本机 inbox/outbox 运维、凭证轮换、Hub 安装/升级、版本兼容和远程机器离线恢复流程；OpenClaw 命令已迁入 Hub，但 profile/config 仍需更细的 typed operations 和前端状态呈现。
+1. 可部署/守护的 Hub 服务进程、本机 inbox/outbox 运维、Hub 安装/升级、版本兼容和远程机器离线恢复流程；客户端已支持凭证文件热加载轮换，OpenClaw 命令已迁入 Hub，但 profile/config 仍需更细的 typed operations 和前端状态呈现。
 2. 可插拔 Runtime Adapter contract 及 Nanobot、Hermes 等 Runtime 的实际操作实现。
 3. 跨节点任务调度、运行时状态 reconcile、多节点容量/配额和实例迁移。
 4. 组织/RBAC、管理员审计浏览器、告警、指标、备份恢复演练及部署规模测试。

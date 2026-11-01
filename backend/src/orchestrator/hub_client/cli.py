@@ -39,11 +39,15 @@ def main() -> None:
         raise SystemExit("HUB_BACKEND_URL is required")
     if not args.simulate and not args.openclaw:
         raise SystemExit("Select at least one adapter: --openclaw or --simulate")
-    token = load_hub_credential(settings.resolved_hub_credential_file)
     config = HubClientConfig.local(settings.hub_id, settings.hub_version, settings.resolved_hub_state_db)
     client = HubClient(
         config,
-        HttpHubTransport(settings.hub_backend_url, settings.hub_id, token, settings.hub_request_timeout_seconds),
+        HttpHubTransport(
+            settings.hub_backend_url,
+            settings.hub_id,
+            lambda: load_hub_credential(settings.resolved_hub_credential_file),
+            settings.hub_request_timeout_seconds,
+        ),
         adapters=[
             *([OpenClawAdapter.from_settings(settings)] if args.openclaw else []),
             *([SimulatedAdapter()] if args.simulate else []),

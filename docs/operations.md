@@ -43,7 +43,7 @@ bash scripts/starter.sh stop
 
 ## Machine Hub 协议联调
 
-Hub 客户端已提供模拟 Adapter 和 OpenClaw typed Adapter，但尚不具备系统服务安装、生产升级/回滚或凭证轮换工具。先为机器 Hub 签发凭证，将 token 保存到独立 `0600` 文件，并在 Backend 与 Hub 配置 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、可持久化的 `HUB_CLIENT_STATE_DB`；若启用 DingTalk 实例创建，需在 Hub 设置本机 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置同一 key。每台 Hub 应使用独立 key。日常 Hub 运行不需要 `HUB_DATABASE_URL`。Backend 与 Hub 必须指向同一个 `HUB_ID`；非回环地址必须使用 HTTPS。然后在目标机器运行：
+Hub 客户端已提供模拟 Adapter 和 OpenClaw typed Adapter，状态库带单进程锁，且每次请求都会从 `0600` 凭证文件读取 token，因此可在保留旧凭证有效期内原子替换文件完成无停机轮换；系统服务安装、生产升级/回滚仍未完成。先为机器 Hub 签发凭证，将 token 保存到独立 `0600` 文件，并在 Backend 与 Hub 配置 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、可持久化的 `HUB_CLIENT_STATE_DB`；若启用 DingTalk 实例创建，需在 Hub 设置本机 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置同一 key。每台 Hub 应使用独立 key。日常 Hub 运行不需要 `HUB_DATABASE_URL`。Backend 与 Hub 必须指向同一个 `HUB_ID`；非回环地址必须使用 HTTPS。然后在目标机器运行：
 
 ```bash
 cd backend

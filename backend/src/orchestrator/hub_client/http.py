@@ -5,6 +5,7 @@ import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -34,7 +35,7 @@ class HubTransportError(RuntimeError):
 class HttpHubTransport:
     """Synchronous HTTPS transport for the versioned internal Hub API."""
 
-    def __init__(self, base_url: str, hub_id: str, token: str, timeout_seconds: float = 15.0):
+    def __init__(self, base_url: str, hub_id: str, token: str | Callable[[], str], timeout_seconds: float = 15.0):
         parsed_url = urllib.parse.urlparse(base_url)
         if parsed_url.scheme not in {"https", "http"} or not parsed_url.hostname:
             raise ValueError("Hub backend URL must use http:// or https://")
@@ -47,16 +48,29 @@ class HttpHubTransport:
                 is_loopback = parsed_url.hostname == "localhost"
             if not is_loopback:
                 raise ValueError("Hub credentials may only be sent over HTTPS except to loopback development URLs")
-        if len(token) < 32 or "\n" in token or "\r" in token:
-            raise ValueError("Hub credential is empty or malformed")
         self.base_url = base_url.rstrip("/")
         self.hub_id = urllib.parse.quote(hub_id, safe="")
-        self.token = token
+        self._token_source = token
+        self._validate_token(self._read_token())
         self.timeout_seconds = timeout_seconds
+
+    @staticmethod
+    def _validate_token(token: str) -> str:
+        if len(token) < 32 or "\n" in token or "\r" in token:
+            raise ValueError("Hub credential is empty or malformed")
+        return token
+
+    def _read_token(self) -> str:
+        token = self._token_source() if callable(self._token_source) else self._token_source
+        return self._validate_token(token)
 
     def _request(self, path: str, method: str, payload: BaseModel | None, response_type: type[M]) -> M:
         body = None
-        headers = {"Accept": "application/json", "Authorization": f"Bearer {self.token}"}
+        try:
+            token = self._read_token()
+        except (OSError, ValueError) as exc:
+            raise HubTransportError(f"Hub credential is unavailable: {exc}") from exc
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
         if payload is not None:
             body = json.dumps(payload.model_dump(mode="json"), separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
