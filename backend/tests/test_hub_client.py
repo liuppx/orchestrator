@@ -463,6 +463,85 @@ class OpenClawStateMigrationTest(unittest.TestCase):
 
 
 class HubClientCliTest(unittest.TestCase):
+    def test_hub_cli_check_is_local_and_does_not_create_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            credential_file = root / "credential"
+            credential_file.write_text("test-hub-token-that-is-long-enough-000000000000\n", encoding="utf-8")
+            credential_file.chmod(0o600)
+            settings = Settings(
+                HUB_REPO_ROOT=str(root),
+                HUB_RUNTIME_DIR=str(root / "runtime"),
+                HUB_ID="hub-cli-check",
+                HUB_BACKEND_URL="http://127.0.0.1:3900",
+                HUB_CREDENTIAL_FILE=str(credential_file),
+            )
+
+            with (
+                patch.object(sys, "argv", ["orchestrator-machine-hub", "--check", "--openclaw", "--once"]),
+                patch("orchestrator.hub_client.cli.Settings", return_value=settings),
+                patch("orchestrator.hub_client.cli.HubClient", side_effect=AssertionError("check must not create a client")),
+            ):
+                from orchestrator.hub_client.cli import main
+
+                main()
+
+            self.assertFalse(settings.resolved_hub_state_db.exists())
+            self.assertFalse(settings.resolved_hub_openclaw_runtime_dir.exists())
+
+    def test_hub_cli_check_rejects_public_http_and_insecure_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            credential_file = root / "credential"
+            credential_file.write_text("test-hub-token-that-is-long-enough-000000000000\n", encoding="utf-8")
+            credential_file.chmod(0o644)
+            settings = Settings(
+                HUB_REPO_ROOT=str(root),
+                HUB_ID="hub-cli-check",
+                HUB_BACKEND_URL="http://backend.example.com",
+                HUB_CREDENTIAL_FILE=str(credential_file),
+            )
+
+            with (
+                patch.object(sys, "argv", ["orchestrator-machine-hub", "--check", "--simulate"]),
+                patch("orchestrator.hub_client.cli.Settings", return_value=settings),
+            ):
+                from orchestrator.hub_client.cli import main
+
+                with self.assertRaisesRegex(SystemExit, "Hub credential file must not be accessible"):
+                    main()
+
+            credential_file.chmod(0o600)
+            with (
+                patch.object(sys, "argv", ["orchestrator-machine-hub", "--check", "--simulate"]),
+                patch("orchestrator.hub_client.cli.Settings", return_value=settings),
+            ):
+                with self.assertRaisesRegex(SystemExit, "only be sent over HTTPS"):
+                    main()
+
+    def test_hub_cli_rejects_in_memory_state_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            credential_file = root / "credential"
+            credential_file.write_text("test-hub-token-that-is-long-enough-000000000000\n", encoding="utf-8")
+            credential_file.chmod(0o600)
+            settings = Settings(
+                HUB_REPO_ROOT=str(root),
+                HUB_ID="hub-cli-check",
+                HUB_BACKEND_URL="http://127.0.0.1:3900",
+                HUB_CREDENTIAL_FILE=str(credential_file),
+                HUB_CLIENT_STATE_DB=":memory:",
+            )
+
+            with (
+                patch.object(sys, "argv", ["orchestrator-machine-hub", "--check", "--simulate"]),
+                patch("orchestrator.hub_client.cli.Settings", return_value=settings),
+            ):
+                from orchestrator.hub_client.cli import main
+
+                with self.assertRaisesRegex(SystemExit, "must be a persistent local file"):
+                    main()
+
     def test_openclaw_hub_cli_runs_without_backend_database_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
