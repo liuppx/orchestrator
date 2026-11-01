@@ -1,22 +1,26 @@
 from __future__ import annotations
 
-import shutil
-
 from orchestrator.config import Settings
 from orchestrator.models import RuntimeProviderListResponse, RuntimeProviderView
+from orchestrator.services.hubs import MachineHubService
 
 
 def runtime_providers(settings: Settings) -> RuntimeProviderListResponse:
-    executable_available = bool(settings.openclaw_prefix) or shutil.which("openclaw") is not None
+    capabilities: list[str] = []
+    if settings.hub_id and settings.database_url:
+        try:
+            capabilities = MachineHubService(settings.database_url).adapter_capabilities(settings.hub_id, "openclaw")
+        except RuntimeError:
+            capabilities = []
     return RuntimeProviderListResponse(
         items=[
             RuntimeProviderView(
                 id="openclaw",
                 name="OpenClaw",
                 category="agent-runtime",
-                management_mode="local-process",
-                availability="configured" if executable_available else "not-configured",
-                capabilities=["create", "start", "stop", "logs", "diagnose", "channel-pairing"],
+                management_mode="machine-hub",
+                availability="configured" if capabilities else "not-configured",
+                capabilities=capabilities,
             )
         ]
     )

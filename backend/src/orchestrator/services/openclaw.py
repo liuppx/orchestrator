@@ -149,14 +149,15 @@ class OpenClawRuntimeService:
             if isinstance(raw, dict) and raw.get("dingtalk_client_secret"):
                 secret_ref = self._store_secret(instance_id, raw.pop("dingtalk_client_secret"))
                 raw["dingtalk_client_secret_ref"] = secret_ref
-        self.cfg.state_file.write_text(
-            json.dumps(stored, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        temporary = self.cfg.state_file.with_name(f".{self.cfg.state_file.name}.tmp")
+        temporary.write_text(json.dumps(stored, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(self.cfg.state_file)
 
     def ensure_runtime_dirs_only(self) -> None:
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.instances_root.mkdir(parents=True, exist_ok=True)
+        self.cfg.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     def _secret_root(self) -> Path:
         return self.cfg.secret_store_dir or (self.cfg.runtime_dir / "secrets")
@@ -1026,7 +1027,12 @@ class OpenClawRuntimeService:
             pass
         self.write_instance_event(raw, "process_stop_done", {"killed_pids": killed_pids})
 
-    def create_instance(self, payload: BotInstanceCreateRequest, owner_wallet: str = "guest") -> BotInstanceView:
+    def create_instance(
+        self,
+        payload: BotInstanceCreateRequest,
+        owner_wallet: str = "guest",
+        instance_id: str | None = None,
+    ) -> BotInstanceView:
         kind = self.normalize_kind(payload.kind)
         if not payload.name.strip():
             raise ValueError("name is required")
@@ -1041,9 +1047,14 @@ class OpenClawRuntimeService:
             raise ValueError(f"model '{selected_model}' not in allowlist")
 
         db = self.read_db()
-        id_base = slugify(payload.name)
-        suffix = uuid4().hex[:6]
-        instance_id = f"{id_base or 'bot'}-{suffix}"
+        if instance_id is None:
+            id_base = slugify(payload.name)
+            suffix = uuid4().hex[:6]
+            instance_id = f"{id_base or 'bot'}-{suffix}"
+        elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", instance_id):
+            raise ValueError("instance_id has an invalid format")
+        elif instance_id in db.get("instances", {}):
+            raise ValueError("instance_id already exists")
         port = self.allocate_port(db)
         profile = f"hub-{instance_id}"
         root_dir = self.cfg.instances_root / instance_id

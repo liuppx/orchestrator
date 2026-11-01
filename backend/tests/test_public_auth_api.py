@@ -16,14 +16,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 import uvicorn
+from cryptography.fernet import Fernet
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from orchestrator.app import create_app
 from orchestrator.config import Settings
 from orchestrator.db import init_database
-from orchestrator.models import AuthSessionView
-from orchestrator.storage import RuntimeNode, sessions_for
+from orchestrator.hub_client import HubClient, HubClientConfig, HttpHubTransport
+from orchestrator.hub_client.openclaw_adapter import OpenClawAdapter
+from orchestrator.hub_client.simulated import SimulatedAdapter
+from orchestrator.models import AuthSessionView, BotInstanceCreateRequest
+from orchestrator.storage import AgentInstance, MachineHub, MachineHubCommand, RuntimeNode, sessions_for
+from orchestrator.services.openclaw import OpenClawRuntimeService
 
 
 def _free_port() -> int:
@@ -42,7 +47,13 @@ class PublicAuthApiTest(unittest.TestCase):
         self.jar = None
         self.opener = None
 
-    def start_server(self, secure_mode: str, repo_root: Path | None = None, use_database: bool = False) -> None:
+    def start_server(
+        self,
+        secure_mode: str,
+        repo_root: Path | None = None,
+        use_database: bool = False,
+        hub_id: str = "",
+    ) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.repo_root = repo_root or Path(__file__).resolve().parents[2]
         database_url = f"sqlite:///{Path(self.tmpdir.name) / 'control.db'}" if use_database else ""
@@ -50,6 +61,7 @@ class PublicAuthApiTest(unittest.TestCase):
             init_database(database_url)
         self.port = _free_port()
         self.base = f"http://127.0.0.1:{self.port}"
+        encryption_key = Fernet.generate_key().decode("ascii")
         env_values = {
             "HUB_REPO_ROOT": str(self.repo_root),
             "HUB_RUNTIME_DIR": str(Path(self.tmpdir.name) / "runtime"),
@@ -69,6 +81,9 @@ class PublicAuthApiTest(unittest.TestCase):
             }),
             "HUB_RUNTIME_NODE_OFFLINE_AFTER_SECONDS": "90",
             "HUB_DATABASE_URL": "",
+            "HUB_ID": hub_id,
+            "HUB_COMMAND_ENCRYPTION_KEY": encryption_key,
+            "HUB_COMMAND_ENCRYPTION_KEYS": json.dumps({hub_id: encryption_key}) if hub_id else "{}",
         }
         env_values["HUB_DATABASE_URL"] = database_url
         self.previous_env = {key: os.environ.get(key) for key in env_values}
@@ -387,7 +402,38 @@ class PublicAuthApiTest(unittest.TestCase):
             self.assertEqual((trader_root / "config" / "strategies.yaml").read_text(encoding="utf-8"), "strategies: []\n")
 
     def test_instance_owner_isolation(self) -> None:
-        self.start_server("never")
+        self.start_server("never", use_database=True, hub_id="legacy-api-hub")
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, credential, _ = self.request(
+            "/api/v1/internal/hubs/legacy-api-hub/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        adapter = OpenClawAdapter.from_settings(self.settings)
+        hub_client = HubClient(
+            HubClientConfig.local("legacy-api-hub", "0.1.0", Path(self.tmpdir.name) / "legacy-hub.sqlite3"),
+            HttpHubTransport(self.base, "legacy-api-hub", credential["token"]),
+            [adapter],
+        )
+        self.addCleanup(hub_client.close)
+        hub_client.run_once()
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
         owner = Account.create()
         other = Account.create()
         owner_headers = self.login(owner)
@@ -436,9 +482,19 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         assert isinstance(deleted, dict)
         self.assertEqual(deleted["id"], instance_id)
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
+        self.assertIsNone(adapter.service.get_instance_raw(instance_id))
+        with sessions_for(self.settings.database_url)() as db_session:
+            self.assertIsNone(db_session.get(AgentInstance, instance_id))
+            commands = db_session.query(MachineHubCommand).filter_by(hub_id="legacy-api-hub").all()
+            self.assertEqual({command.operation for command in commands}, {"create_instance", "delete_instance"})
+            self.assertEqual({command.status for command in commands}, {"succeeded"})
 
     def test_runtime_console_lists_owned_instances_and_providers(self) -> None:
-        self.start_server("never")
+        self.start_server("never", use_database=True, hub_id="runtime-console-hub")
         owner = Account.create()
         other = Account.create()
         owner_headers = self.login(owner)
@@ -452,7 +508,8 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         assert isinstance(provider_response, dict)
         self.assertEqual(provider_response["items"][0]["id"], "openclaw")
-        self.assertEqual(provider_response["items"][0]["management_mode"], "local-process")
+        self.assertEqual(provider_response["items"][0]["management_mode"], "machine-hub")
+        self.assertEqual(provider_response["items"][0]["availability"], "not-configured")
 
         status, created, _ = self.request(
             "/api/v1/public/runtime/instances",
@@ -460,11 +517,52 @@ class PublicAuthApiTest(unittest.TestCase):
             payload={"runtime_type": "openclaw", "kind": "whatsapp", "name": "Console Bot"},
             headers=owner_headers,
         )
+        self.assertEqual(status, 503)
+        assert isinstance(created, dict)
+        self.assertEqual(created["detail"], "Machine Hub is offline")
+        status, legacy_created, _ = self.request(
+            "/api/v1/public/agent/instances",
+            method="POST",
+            payload={"kind": "whatsapp", "name": "Console Bot"},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 503)
+        assert isinstance(legacy_created, dict)
+        self.assertEqual(legacy_created["detail"], "Machine Hub is offline")
+
+        legacy_source = OpenClawRuntimeService(
+            OpenClawAdapter._config_from_settings(self.settings, database_url=self.settings.database_url)
+        )
+        legacy_source.create_instance(
+            BotInstanceCreateRequest(kind="whatsapp", name="Console Bot"),
+            owner_wallet=owner.address,
+        )
+        status, runtime_listing, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
         self.assertEqual(status, 200)
+        assert isinstance(runtime_listing, dict)
+        created = runtime_listing["items"][0]
         assert isinstance(created, dict)
         self.assertEqual(created["runtime_type"], "openclaw")
         self.assertEqual(created["desired_state"], "stopped")
         self.assertEqual(created["observed_state"], "created")
+
+        status, denied_action, _ = self.request(
+            f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
+            method="POST",
+            headers=other_headers,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(denied_action["detail"], "instance not found")
+
+        with patch("orchestrator.services.openclaw.OpenClawRuntimeService.start_instance") as direct_start:
+            status, hub_offline, _ = self.request(
+                f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
+                method="POST",
+                headers=owner_headers,
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(hub_offline["detail"], "Machine Hub is offline")
+        direct_start.assert_not_called()
 
         status, listing, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
         self.assertEqual(status, 200)
@@ -473,27 +571,179 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertEqual(listing["stopped"], 1)
         self.assertEqual(listing["items"][0]["id"], created["id"])
 
-        with patch("orchestrator.services.openclaw.OpenClawRuntimeService.configure_profile", side_effect=RuntimeError("runtime unavailable")):
-            status, failed_start, _ = self.request(
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/runtime-console-hub/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(OpenClawAdapter.migrate_backend_state_to_local(self.settings), 1)
+        adapter = OpenClawAdapter.from_settings(self.settings)
+        self.assertIsNone(adapter.service.cfg.database_url)
+        self.assertTrue(self.settings.resolved_hub_openclaw_state_file.is_file())
+        self.assertEqual(self.settings.resolved_hub_openclaw_state_file.stat().st_mode & 0o777, 0o600)
+        hub_client = HubClient(
+            HubClientConfig.local("runtime-console-hub", "0.1.0", Path(self.tmpdir.name) / "runtime-hub.sqlite3"),
+            HttpHubTransport(self.base, "runtime-console-hub", issued["token"]),
+            [adapter],
+        )
+        hub_client.run_once()
+        status, connected_providers, _ = self.request("/api/v1/public/runtime/providers", headers=owner_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(connected_providers["items"][0]["availability"], "configured")
+        self.assertEqual(
+            connected_providers["items"][0]["capabilities"],
+            [
+                "create_instance",
+                "inspect_instance",
+                "start_instance",
+                "stop_instance",
+                "delete_instance",
+                "update_instance_model",
+                "get_instance_logs",
+                "diagnose_instance",
+                "pair_whatsapp",
+            ],
+        )
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
+        with (
+            patch("orchestrator.services.openclaw.OpenClawRuntimeService.configure_profile"),
+            patch("orchestrator.services.openclaw.OpenClawRuntimeService.start_instance_process", return_value=424242),
+            patch("orchestrator.services.openclaw.OpenClawRuntimeService.stop_instance_process"),
+            patch("orchestrator.services.openclaw.OpenClawRuntimeService.is_pid_alive", return_value=True),
+        ):
+            status, started, _ = self.request(
                 f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
                 method="POST",
                 headers=owner_headers,
             )
-        self.assertEqual(status, 502)
-        assert isinstance(failed_start, dict)
-        self.assertEqual(failed_start["detail"], "runtime unavailable")
-
-        status, listing_after_failure, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+            self.assertEqual(status, 200)
+            status, stopped, _ = self.request(
+                f"/api/v1/public/runtime/instances/{created['id']}/actions/stop",
+                method="POST",
+                headers=owner_headers,
+            )
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        hub_client.close()
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
         self.assertEqual(status, 200)
-        assert isinstance(listing_after_failure, dict)
-        self.assertEqual(listing_after_failure["attention"], 1)
-        self.assertEqual(listing_after_failure["items"][0]["desired_state"], "running")
-        self.assertEqual(listing_after_failure["items"][0]["observed_state"], "error")
+        assert isinstance(started, dict) and isinstance(stopped, dict)
+        self.assertIn("completed by Machine Hub", started["message"])
+        self.assertEqual(started["instance"]["observed_state"], "running")
+        self.assertIn("completed by Machine Hub", stopped["message"])
+        self.assertEqual(stopped["instance"]["observed_state"], "stopped")
+        with sessions_for(self.settings.database_url)() as db_session:
+            commands = db_session.query(MachineHubCommand).filter_by(hub_id="runtime-console-hub").all()
+            self.assertEqual({command.status for command in commands}, {"succeeded"})
+            self.assertEqual({command.operation for command in commands}, {"start_instance", "stop_instance"})
+            self.assertTrue(all(command.desired_revision in {1, 2} for command in commands))
+            catalog_instance = db_session.get(AgentInstance, created["id"])
+            self.assertEqual(catalog_instance.desired_state, "stopped")
+            self.assertEqual(catalog_instance.observed_state, "stopped")
+
+        status, listing_after_actions, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+        self.assertEqual(status, 200)
+        assert isinstance(listing_after_actions, dict)
+        self.assertEqual(listing_after_actions["stopped"], 1)
+        self.assertEqual(listing_after_actions["items"][0]["desired_state"], "stopped")
+        self.assertEqual(listing_after_actions["items"][0]["observed_state"], "stopped")
 
         status, other_listing, _ = self.request("/api/v1/public/runtime/instances", headers=other_headers)
         self.assertEqual(status, 200)
         assert isinstance(other_listing, dict)
         self.assertEqual(other_listing["items"], [])
+
+    def test_runtime_console_creates_openclaw_instance_through_hub_with_encrypted_secret(self) -> None:
+        self.start_server("never", use_database=True, hub_id="runtime-create-hub")
+        owner = Account.create()
+        owner_headers = self.login(owner)
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/runtime-create-hub/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        adapter = OpenClawAdapter.from_settings(self.settings)
+        self.assertIsNone(adapter.service.cfg.database_url)
+        hub_client = HubClient(
+            HubClientConfig.local("runtime-create-hub", "0.1.0", Path(self.tmpdir.name) / "runtime-create.sqlite3"),
+            HttpHubTransport(self.base, "runtime-create-hub", issued["token"]),
+            [adapter],
+        )
+        self.addCleanup(hub_client.close)
+        hub_client.run_once()
+
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
+        secret = "test-dingtalk-secret-never-store-plaintext"
+        status, created, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={
+                "runtime_type": "openclaw",
+                "kind": "dingtalk",
+                "name": "Hub Created Bot",
+                "dingtalk_client_id": "test-client-id",
+                "dingtalk_client_secret": secret,
+            },
+            headers=owner_headers,
+        )
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
+        self.assertEqual(status, 200)
+        assert isinstance(created, dict)
+        self.assertEqual(created["runtime_type"], "openclaw")
+        self.assertEqual(created["workload_type"], "dingtalk")
+        self.assertEqual(created["observed_state"], "stopped")
+        self.assertGreater(int(created["endpoint"].rsplit(":", 1)[1]), 0)
+        self.assertIn(created["id"], adapter.service.read_db()["instances"])
+        with sessions_for(self.settings.database_url)() as db_session:
+            command = db_session.query(MachineHubCommand).filter_by(hub_id="runtime-create-hub").one()
+            catalog_instance = db_session.get(AgentInstance, created["id"])
+            self.assertEqual(command.operation, "create_instance")
+            self.assertEqual(command.status, "succeeded")
+            self.assertNotIn(secret, json.dumps(command.payload_json))
+            self.assertEqual(catalog_instance.owner_id, owner.address)
+            self.assertGreater(catalog_instance.port, 0)
+        local_raw = adapter.service.get_instance_raw(created["id"])[1]
+        self.assertEqual(local_raw["dingtalk_client_secret"], secret)
+        state_text = self.settings.resolved_hub_openclaw_state_file.read_text(encoding="utf-8")
+        self.assertNotIn(secret, state_text)
 
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")
@@ -694,6 +944,644 @@ class PublicAuthApiTest(unittest.TestCase):
         )
         self.assertEqual(status, 503)
         self.assertIn("HUB_DATABASE_URL", unavailable["detail"])
+
+    def test_machine_hub_credential_heartbeat_inventory_commands_and_event_replay(self) -> None:
+        self.start_server("never", use_database=True)
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, issued_headers = self.request(
+            "/api/v1/internal/hubs/hub-a/credentials",
+            method="POST",
+            payload={"expires_in_seconds": 3600},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(issued["hub_id"], "hub-a")
+        issued_header_map = {key.lower(): value for key, value in issued_headers}
+        self.assertEqual(issued_header_map.get("cache-control"), "no-store")
+        self.assertEqual(issued_header_map.get("pragma"), "no-cache")
+        token = issued["token"]
+        credential_id = issued["credential_id"]
+        with sessions_for(self.settings.database_url)() as session:
+            from orchestrator.storage import MachineHubCredential
+
+            credential = session.get(MachineHubCredential, credential_id)
+            self.assertNotEqual(credential.token_digest, token)
+            self.assertEqual(len(credential.token_digest), 64)
+        status, credential_list, _ = self.request(
+            "/api/v1/internal/hubs/hub-a/credentials", headers=admin_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("token", credential_list["items"][0])
+        self.assertEqual(credential_list["items"][0]["credential_id"], credential_id)
+
+        hub_headers = {"Authorization": f"Bearer {token}"}
+        path = "/api/v1/internal/hubs/hub-a"
+        heartbeat = {
+            "protocol_version": "1.0",
+            "hub_version": "0.1.0",
+            "hostname": "host-a",
+            "operating_system": "linux",
+            "operating_system_version": "6.1",
+            "architecture": "x86_64",
+            "resources": {"cpu_count": 8},
+            "adapters": [
+                {
+                    "runtime_type": "openclaw",
+                    "adapter_version": "1.0.0",
+                    "capabilities": ["inspect_instance", "start_instance", "stop_instance"],
+                }
+            ],
+        }
+        status, denied, _ = self.request(f"{path}/heartbeat", method="POST", payload=heartbeat)
+        self.assertEqual(status, 401)
+        self.assertEqual(denied["detail"], "invalid Hub credentials")
+        status, denied_node_token, _ = self.request(
+            f"{path}/heartbeat",
+            method="POST",
+            payload=heartbeat,
+            headers={"Authorization": "Bearer node-a-test-token-with-at-least-32-characters"},
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(denied_node_token["detail"], "invalid Hub credentials")
+        status, denied_admin, _ = self.request(f"{path}/credentials")
+        self.assertEqual(status, 401)
+        self.assertEqual(denied_admin["detail"], "invalid admin token")
+
+        status, heartbeat_response, _ = self.request(
+            f"{path}/heartbeat", method="POST", payload=heartbeat, headers=hub_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(heartbeat_response["protocol_version"], "1.0")
+
+        observed_at = datetime.now(timezone.utc).isoformat()
+        inventory = {
+            "protocol_version": "1.0",
+            "revision": 1,
+            "captured_at": observed_at,
+            "instances": [
+                {
+                    "instance_id": "openclaw-1",
+                    "runtime_type": "openclaw",
+                    "display_name": "Local OpenClaw",
+                    "runtime_version": "2026.10.1",
+                    "observed_state": "stopped",
+                    "capabilities": ["start_instance", "stop_instance"],
+                    "observed_at": observed_at,
+                }
+            ],
+        }
+        status, inventory_ack, _ = self.request(
+            f"{path}/inventory", method="PUT", payload=inventory, headers=hub_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(inventory_ack["accepted_revision"], 1)
+        status, replay_ack, _ = self.request(
+            f"{path}/inventory", method="PUT", payload=inventory, headers=hub_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(replay_ack["accepted_revision"], 1)
+        newer_inventory = {
+            **inventory,
+            "revision": 2,
+            "instances": [{**inventory["instances"][0], "observed_state": "running"}],
+        }
+        status, newer_ack, _ = self.request(
+            f"{path}/inventory", method="PUT", payload=newer_inventory, headers=hub_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(newer_ack["accepted_revision"], 2)
+        status, stale, _ = self.request(
+            f"{path}/inventory", method="PUT", payload=inventory, headers=hub_headers
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("stale", stale["detail"])
+
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        status, receipt, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "start_instance",
+                "idempotency_key": "start-openclaw-1-revision-2",
+                "desired_revision": 2,
+                "trace_id": "trace-hub-1",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 202)
+        command_id = receipt["command_id"]
+        status, command_replay, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "start_instance",
+                "idempotency_key": "start-openclaw-1-revision-2",
+                "desired_revision": 2,
+                "trace_id": "trace-hub-1",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(command_replay["command_id"], command_id)
+        status, idempotency_conflict, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "stop_instance",
+                "idempotency_key": "start-openclaw-1-revision-2",
+                "desired_revision": 2,
+                "trace_id": "trace-hub-1",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("idempotency key", idempotency_conflict["detail"])
+        status, stale_revision, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "stop_instance",
+                "idempotency_key": "stop-openclaw-1-stale-revision",
+                "desired_revision": 1,
+                "trace_id": "trace-hub-stale-revision",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("desired_revision", stale_revision["detail"])
+        status, reused_revision, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "stop_instance",
+                "idempotency_key": "stop-openclaw-1-same-revision",
+                "desired_revision": 2,
+                "trace_id": "trace-hub-same-revision",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("desired_revision", reused_revision["detail"])
+        status, missing_instance, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "not-in-inventory",
+                "runtime_type": "openclaw",
+                "operation": "start_instance",
+                "idempotency_key": "start-missing-instance",
+                "desired_revision": 1,
+                "trace_id": "trace-hub-missing",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("not present", missing_instance["detail"])
+        status, unsupported, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "restart_instance",
+                "idempotency_key": "restart-openclaw-1-revision-3",
+                "desired_revision": 3,
+                "trace_id": "trace-hub-2",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("does not support", unsupported["detail"])
+        status, instance_unsupported, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "inspect_instance",
+                "idempotency_key": "inspect-openclaw-1-revision-2",
+                "desired_revision": 2,
+                "trace_id": "trace-hub-inspect",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("Instance does not support", instance_unsupported["detail"])
+
+        status, poll, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(poll["commands"][0]["attempt"], 1)
+        lease_path = f"{path}/commands/{command_id}/lease"
+        status, renewed_lease, _ = self.request(
+            lease_path,
+            method="POST",
+            payload={"attempt": 1},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(renewed_lease["command_id"], command_id)
+        self.assertEqual(renewed_lease["attempt"], 1)
+        renewed_until = datetime.fromisoformat(renewed_lease["lease_expires_at"])
+        lease_server_time = datetime.fromisoformat(renewed_lease["server_time"])
+        self.assertGreaterEqual((renewed_until - lease_server_time).total_seconds(), 59)
+        status, stale_attempt, _ = self.request(
+            lease_path,
+            method="POST",
+            payload={"attempt": 2},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("lease is no longer active", stale_attempt["detail"])
+        with sessions_for(self.settings.database_url).begin() as session:
+            command = session.get(MachineHubCommand, command_id)
+            command.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        status, expired_lease, _ = self.request(
+            lease_path,
+            method="POST",
+            payload={"attempt": 1},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("lease is no longer active", expired_lease["detail"])
+        stale_lease_event = {
+            "type": "command",
+            "event_id": "566e00bf-0cf7-4a98-b33b-6c91c6f39593",
+            "sequence": 1,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "command_id": command_id,
+            "desired_revision": 2,
+            "attempt": 1,
+            "phase": "succeeded",
+            "progress_percent": 100,
+        }
+        status, stale_lease_ack, _ = self.request(
+            f"{path}/events",
+            method="POST",
+            payload={"protocol_version": "1.0", "after_sequence": 0, "events": [stale_lease_event]},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(stale_lease_ack["accepted_through_sequence"], 1)
+        with sessions_for(self.settings.database_url)() as session:
+            command = session.get(MachineHubCommand, command_id)
+            self.assertEqual(command.status, "running")
+            self.assertEqual(command.result_json, {})
+        status, reclaimed, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(reclaimed["commands"][0]["attempt"], 2)
+        with sessions_for(self.settings.database_url)() as session:
+            lease_before_progress = session.get(MachineHubCommand, command_id).lease_expires_at
+
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        first_event_id = "b8b5b118-237b-4de7-b59f-8b7068fbc301"
+        second_event_id = "8a862baf-59ae-413d-9bf1-5d7887e5e6d5"
+        event_batch = {
+            "protocol_version": "1.0",
+            "after_sequence": 1,
+            "events": [
+                {
+                    "type": "command",
+                    "event_id": first_event_id,
+                    "sequence": 2,
+                    "occurred_at": occurred_at,
+                    "command_id": command_id,
+                    "desired_revision": 2,
+                    "attempt": 2,
+                    "phase": "running",
+                    "progress_percent": 50,
+                },
+                {
+                    "type": "command",
+                    "event_id": second_event_id,
+                    "sequence": 3,
+                    "occurred_at": occurred_at,
+                    "command_id": command_id,
+                    "desired_revision": 2,
+                    "attempt": 1,
+                    "phase": "failed",
+                    "error_code": "STALE_ATTEMPT",
+                },
+            ],
+        }
+        status, event_ack, _ = self.request(
+            f"{path}/events",
+            method="POST",
+            payload=event_batch,
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(event_ack["accepted_through_sequence"], 3)
+        with sessions_for(self.settings.database_url)() as session:
+            lease_after_progress = session.get(MachineHubCommand, command_id).lease_expires_at
+        self.assertGreater(
+            lease_after_progress.replace(tzinfo=timezone.utc),
+            lease_before_progress.replace(tzinfo=timezone.utc),
+        )
+        terminal_event = {
+            "type": "command",
+            "event_id": "e6fbb004-1c4f-4d50-a2e2-5c3b57f86a45",
+            "sequence": 4,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "command_id": command_id,
+            "desired_revision": 2,
+            "attempt": 2,
+            "phase": "succeeded",
+            "progress_percent": 100,
+            "observed_state": "running",
+        }
+        status, terminal_ack, _ = self.request(
+            f"{path}/events",
+            method="POST",
+            payload={"protocol_version": "1.0", "after_sequence": 3, "events": [terminal_event]},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(terminal_ack["accepted_through_sequence"], 4)
+        status, event_replay_ack, _ = self.request(
+            f"{path}/events", method="POST", payload=event_batch, headers=hub_headers
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(event_replay_ack["accepted_through_sequence"], 4)
+        with sessions_for(self.settings.database_url)() as session:
+            command = session.get(MachineHubCommand, command_id)
+            self.assertEqual(command.status, "succeeded")
+
+        status, expiring_receipt, _ = self.request(
+            f"{path}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-1",
+                "runtime_type": "openclaw",
+                "operation": "stop_instance",
+                "idempotency_key": "stop-openclaw-1-revision-3",
+                "desired_revision": 3,
+                "trace_id": "trace-hub-expiring",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 202)
+        expiring_command_id = expiring_receipt["command_id"]
+        status, expiring_poll, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(expiring_poll["commands"][0]["attempt"], 1)
+        with sessions_for(self.settings.database_url).begin() as session:
+            expiring_command = session.get(MachineHubCommand, expiring_command_id)
+            expiring_command.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        late_event = {
+            "type": "command",
+            "event_id": "f15455d0-9e5e-4de3-8f2a-7a8c9d2fb34c",
+            "sequence": 5,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "command_id": expiring_command_id,
+            "desired_revision": 3,
+            "attempt": 1,
+            "phase": "succeeded",
+            "progress_percent": 100,
+        }
+        status, late_ack, _ = self.request(
+            f"{path}/events",
+            method="POST",
+            payload={"protocol_version": "1.0", "after_sequence": 4, "events": [late_event]},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(late_ack["accepted_through_sequence"], 5)
+        with sessions_for(self.settings.database_url)() as session:
+            expiring_command = session.get(MachineHubCommand, expiring_command_id)
+            self.assertEqual(expiring_command.status, "expired")
+
+        status, revoked, _ = self.request(
+            f"{path}/credentials/{credential_id}/revoke", method="POST", headers=admin_headers
+        )
+        self.assertEqual(status, 200)
+        status, denied_after_revoke, _ = self.request(
+            f"{path}/commands", headers=hub_headers
+        )
+        self.assertEqual(status, 401)
+
+    def test_machine_hub_credentials_are_capped_for_safe_rotation(self) -> None:
+        self.start_server("never", use_database=True)
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        credentials = []
+        for _ in range(3):
+            status, result, _ = self.request(
+                "/api/v1/internal/hubs/hub-rotation/credentials",
+                method="POST",
+                payload={},
+                headers=admin_headers,
+            )
+            self.assertEqual(status, 200)
+            credentials.append(result["credential_id"])
+        status, conflict, _ = self.request(
+            "/api/v1/internal/hubs/hub-rotation/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("at most three", conflict["detail"])
+        status, revoked, _ = self.request(
+            f"/api/v1/internal/hubs/hub-rotation/credentials/{credentials[0]}/revoke",
+            method="POST",
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        status, replacement, _ = self.request(
+            "/api/v1/internal/hubs/hub-rotation/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertNotEqual(replacement["credential_id"], credentials[0])
+
+    def test_newer_state_revision_supersedes_inflight_command_and_fences_late_result(self) -> None:
+        self.start_server("never", use_database=True)
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/hub-revisions/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        hub_headers = {"Authorization": f"Bearer {issued['token']}"}
+        path = "/api/v1/internal/hubs/hub-revisions"
+        status, _, _ = self.request(
+            f"{path}/heartbeat",
+            method="POST",
+            payload={
+                "protocol_version": "1.0",
+                "hub_version": "0.1.0",
+                "hostname": "revision-host",
+                "operating_system": "linux",
+                "architecture": "x86_64",
+                "adapters": [
+                    {
+                        "runtime_type": "openclaw",
+                        "adapter_version": "1.0.0",
+                        "capabilities": ["start_instance", "stop_instance"],
+                    }
+                ],
+            },
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        now = datetime.now(timezone.utc).isoformat()
+        status, _, _ = self.request(
+            f"{path}/inventory",
+            method="PUT",
+            payload={
+                "protocol_version": "1.0",
+                "revision": 1,
+                "captured_at": now,
+                "instances": [
+                    {
+                        "instance_id": "instance-revision",
+                        "runtime_type": "openclaw",
+                        "observed_state": "stopped",
+                        "capabilities": ["start_instance", "stop_instance"],
+                        "observed_at": now,
+                    }
+                ],
+            },
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+
+        def issue_state_command(operation: str, revision: int, key: str) -> str:
+            response_status, receipt, _ = self.request(
+                f"{path}/commands",
+                method="POST",
+                payload={
+                    "target_instance_id": "instance-revision",
+                    "runtime_type": "openclaw",
+                    "operation": operation,
+                    "idempotency_key": key,
+                    "desired_revision": revision,
+                    "trace_id": key,
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                },
+                headers=admin_headers,
+            )
+            self.assertEqual(response_status, 202)
+            return receipt["command_id"]
+
+        first_command_id = issue_state_command("start_instance", 1, "revision-start-1")
+        status, first_claim, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(first_claim["commands"][0]["command_id"], first_command_id)
+        self.assertEqual(first_claim["commands"][0]["attempt"], 1)
+
+        second_command_id = issue_state_command("stop_instance", 2, "revision-stop-2")
+        with sessions_for(self.settings.database_url)() as session:
+            first_command = session.get(MachineHubCommand, first_command_id)
+            self.assertEqual(first_command.status, "superseded")
+        status, blocked_claim, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(blocked_claim["commands"], [])
+
+        terminal_event = {
+            "type": "command",
+            "event_id": "8e72b1a6-16a9-441d-99e2-88ae66a80a22",
+            "sequence": 1,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "command_id": first_command_id,
+            "desired_revision": 1,
+            "attempt": 1,
+            "phase": "succeeded",
+            "observed_state": "running",
+        }
+        status, ack, _ = self.request(
+            f"{path}/events",
+            method="POST",
+            payload={"protocol_version": "1.0", "after_sequence": 0, "events": [terminal_event]},
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(ack["accepted_through_sequence"], 1)
+        status, second_claim, _ = self.request(f"{path}/commands", headers=hub_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(second_claim["commands"][0]["command_id"], second_command_id)
+        self.assertEqual(second_claim["commands"][0]["attempt"], 1)
+        with sessions_for(self.settings.database_url)() as session:
+            first_command = session.get(MachineHubCommand, first_command_id)
+            self.assertEqual(first_command.status, "superseded")
+
+    def test_machine_hub_client_completes_http_protocol_round_trip(self) -> None:
+        self.start_server("never", use_database=True)
+        hub_id = "hub-client-e2e"
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+
+        adapter = SimulatedAdapter()
+        client = HubClient(
+            HubClientConfig.local(hub_id, "0.1.0", Path(self.tmpdir.name) / "hub-client.sqlite3"),
+            HttpHubTransport(self.base, hub_id, issued["token"]),
+            [adapter],
+        )
+        self.addCleanup(client.close)
+        initial = client.run_once()
+        self.assertEqual(initial.inventory_revision, 1)
+
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        status, receipt, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "simulated-1",
+                "runtime_type": "simulated",
+                "operation": "start_instance",
+                "idempotency_key": "hub-client-e2e-start-1",
+                "desired_revision": 1,
+                "trace_id": "hub-client-e2e-start",
+                "expires_at": expires_at,
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 202)
+
+        execution = client.run_once()
+        self.assertEqual(execution.executed_commands, 1)
+        self.assertEqual(adapter.observed_state.value, "running")
+        with sessions_for(self.settings.database_url)() as session:
+            stored_command = session.get(MachineHubCommand, receipt["command_id"])
+            self.assertEqual(stored_command.status, "succeeded")
+            self.assertEqual(
+                session.query(MachineHub).filter_by(id=hub_id).one().inventory_json["instances"][0]["observed_state"],
+                "stopped",
+            )
+
+        client.store.set_meta("next_inventory_at", "1970-01-01T00:00:00+00:00")
+        client.run_once()
+        with sessions_for(self.settings.database_url)() as session:
+            hub = session.get(MachineHub, hub_id)
+            self.assertEqual(hub.inventory_json["instances"][0]["observed_state"], "running")
 
 
 if __name__ == "__main__":
