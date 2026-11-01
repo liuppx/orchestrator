@@ -102,7 +102,7 @@ Orchestrator 处于几个成熟类别的交叉处，不应照搬单一产品的�
 ## 重构原则与阶段
 
 1. **稳定协议与服务端**：JSON Schema 和首期内部 API 已建立；仍需明确向后兼容规则、客户端 enrollment 与运行中凭证轮换。目标边界见[Hub 架构 ADR](hub-architecture-adr.md)。
-2. **完成 Hub 客户端交付机制**：协议客户端和长命令租约机制已有测试，Runtime API 的 OpenClaw 创建/启停已走 Hub 命令；仍需补凭证轮换、单进程锁、守护进程、升级/恢复及强制取消流程。
+2. **完成 Hub 客户端交付机制**：协议客户端、长命令租约和本地状态库单进程锁已有测试，Runtime API 的 OpenClaw 创建/启停已走 Hub 命令；仍需补凭证轮换、守护进程、升级/恢复及强制取消流程。
 3. **完成 OpenClaw 迁移**：Runtime API 和旧 Messenger `/agent` 的创建/删除、模型配置、启停、日志、配对和诊断接口已通过 Hub 命令；下一步让工作台实例状态统一以 Hub inventory/观测事件为准，并补齐前端操作状态。再按真实接口验证 Codex CLI、Claude Code CLI；未实现能力明确返回 unsupported。
 4. **统一任务与审计闭环**：区分 Runtime 命令和 Node Registry 社区应用生命周期任务，再统一幂等、超时、重试、回滚、审计和告警策略。
 5. **生产就绪**：RBAC/租户边界、凭证轮换、可观测性、配额和调度策略、灾备演练、迁移回滚、节点安全基线及多节点压力测试。

@@ -10,7 +10,7 @@ from .core import (
     load_hub_credential,
 )
 from .http import HubTransportError, HttpHubTransport
-from .store import HubStateStore
+from .store import HubProcessLock, HubStateStore
 
 __all__ = [
     "AdapterExecution",
@@ -20,6 +20,7 @@ __all__ = [
     "HubClientConfig",
     "HubCycleResult",
     "HubStateStore",
+    "HubProcessLock",
     "HubTransportError",
     "HttpHubTransport",
     "load_hub_credential",

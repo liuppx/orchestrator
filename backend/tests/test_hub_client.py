@@ -298,6 +298,15 @@ class HubClientTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different Hub ID"):
             HubClient(config, MemoryHubTransport(), [SimulatedAdapter()])
 
+    def test_state_database_allows_only_one_active_hub_process(self) -> None:
+        first = self.make_client(MemoryHubTransport(), SimulatedAdapter())
+        with self.assertRaisesRegex(ValueError, "already locked"):
+            self.make_client(MemoryHubTransport(), SimulatedAdapter())
+        first.close()
+
+        second = self.make_client(MemoryHubTransport(), SimulatedAdapter())
+        second.close()
+
     def test_credential_file_requires_private_permissions(self) -> None:
         credential_file = Path(self.temp_dir.name) / "credential"
         credential_file.write_text("x" * 32, encoding="utf-8")

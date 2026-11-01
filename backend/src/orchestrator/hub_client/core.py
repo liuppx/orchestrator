@@ -32,7 +32,7 @@ from orchestrator.protocols.hub_v1 import (
 )
 
 from .http import HubTransportError
-from .store import HubStateStore
+from .store import HubProcessLock, HubStateStore
 
 
 class HubAdapter(Protocol):
@@ -164,15 +164,22 @@ class HubClient:
         self._adapters_by_type = {adapter.descriptor().runtime_type: adapter for adapter in self.adapters}
         if len(self._adapters_by_type) != len(self.adapters):
             raise ValueError("Hub adapters must have unique runtime_type values")
-        self.store = HubStateStore(config.state_path)
-        stored_hub_id = self.store.get_meta("hub_id")
-        if stored_hub_id and stored_hub_id != config.hub_id:
-            self.store.close()
-            raise ValueError("Hub state database is already bound to a different Hub ID")
-        self.store.set_meta("hub_id", config.hub_id)
+        self.process_lock = HubProcessLock(config.state_path)
+        try:
+            self.store = HubStateStore(config.state_path)
+            stored_hub_id = self.store.get_meta("hub_id")
+            if stored_hub_id and stored_hub_id != config.hub_id:
+                raise ValueError("Hub state database is already bound to a different Hub ID")
+            self.store.set_meta("hub_id", config.hub_id)
+        except BaseException:
+            self.process_lock.close()
+            raise
 
     def close(self) -> None:
-        self.store.close()
+        try:
+            self.store.close()
+        finally:
+            self.process_lock.close()
 
     def _heartbeat_payload(self) -> HubHeartbeatRequestV1:
         return HubHeartbeatRequestV1(

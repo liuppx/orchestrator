@@ -188,7 +188,7 @@ Runtime Node 运维接口：
 
 1. Hub v1 核心消息、JSON Schema、数据库表、服务端 API 和 SQLite 客户端已完成首期；续租、失租处理和协作取消已有测试。
 2. OpenClaw typed Adapter 和 Runtime/Messenger API 委派已接入；下一步让前端以 Hub inventory/观测事件作为实例状态权威来源，并补齐操作状态。
-3. 补 Hub 进程锁、凭证轮换、服务安装/升级、版本兼容、硬取消与故障恢复演练，再扩展远程机器。
+3. Hub 进程锁已落地；继续补凭证轮换、服务安装/升级、版本兼容、硬取消与故障恢复演练，再扩展远程机器。
 4. 再逐个验证 Codex CLI、Claude Code CLI 等 Runtime Adapter；某能力不支持时显式返回 unsupported，不用通用 shell 执行伪装兼容。
 5. 在多用户/多节点公开运营前完成 RBAC、审计、告警、备份恢复、凭证治理与故障演练。
 

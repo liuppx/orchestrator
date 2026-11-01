@@ -9,10 +9,56 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows uses msvcrt below.
+    fcntl = None
+
 from orchestrator.protocols.hub_v1 import HubInventorySnapshotV1, HubRuntimeInstanceV1
 
 
 T = TypeVar("T")
+
+
+class HubProcessLock:
+    """Keep one active Hub client per local state database."""
+
+    def __init__(self, state_path: Path | str):
+        self._file = None
+        if str(state_path) == ":memory:":
+            return
+        self.path = Path(f"{state_path}.lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("a+", encoding="utf-8")
+        try:
+            if fcntl is not None:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:  # pragma: no cover - exercised on Windows CI.
+                import msvcrt
+
+                self._file.seek(0)
+                self._file.write("0")
+                self._file.flush()
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+        except (BlockingIOError, OSError) as exc:
+            self._file.close()
+            self._file = None
+            raise ValueError("Hub state database is already locked by another process") from exc
+
+    def close(self) -> None:
+        if self._file is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            else:  # pragma: no cover - exercised on Windows CI.
+                import msvcrt
+
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            self._file.close()
+            self._file = None
 
 
 def _now() -> str:

@@ -26,7 +26,7 @@ Hub 主动出站连接 Backend；Backend 不通过 SSH 或公网入站端口连�
 ## 术语与领域边界
 
 - **Backend / Control Plane**：中心工作台和 API，管理用户、组织/项目权限、Hub 注册、实例目录、期望状态、命令队列、观测状态、事件、审计和调度策略。
-- **Hub**：部署在每台受管机器上的常驻服务，以单机身份注册，持有本机 Runtime Adapter，主动向 Backend 拉取工作并回报心跳、清单、状态和事件。一个 Hub 对应一台机器；开发机也走相同协议。
+- **Hub**：部署在每台受管机器上的常驻服务，以单机身份注册，持有本机 Runtime Adapter，主动向 Backend 拉取工作并回报心跳、清单、状态和事件。一个 Hub 对应一台机器；开发机也走相同协议。客户端对本地状态库持有进程锁，避免同一 Hub 重复运行。
 - **Runtime Adapter**：Hub 内对某类本机 Runtime 的显式适配器。按能力清单暴露发现、检查、生命周期或执行能力；不支持的能力明确返回 unsupported。
 - **Runtime Provider**：现有 API/控制台的能力目录用词，表示可纳管的 Runtime 类型；目标上由各 Hub 上报，具体本机操作由对应 Runtime Adapter 执行。
 - **Runtime Instance**：机器上一个可单独识别和观测的 Runtime 实例。Codex、Claude Code 与 OpenClaw 可以有不同的实例、配置和能力模型，不能假设它们具有完全相同的生命周期接口。
@@ -121,7 +121,7 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 
 1. 已建立 Runtime/Hub/Instance/命令/事件消息模型、JSON Schema、凭证管理 API、服务端持久化、SQLite inbox/outbox 客户端和 OpenClaw typed Adapter。
 2. Runtime API 和旧 Messenger API 的创建、删除、模型配置、启停、日志、诊断及配对已由 Backend 校验钱包 owner 后下发 Hub 命令；Hub 本地 JSON/Secret Store 和 Backend 控制面目录已分离，Hub 日常运行不依赖 PostgreSQL；同机真实 Backend HTTP 与 Hub 客户端闭环、DingTalk 密文持久化通过测试。
-3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；下一步让前端统一使用 Hub inventory/观测数据，完善进程锁、凭证轮换、Hub 安装升级和远程多机验收。
+3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；前端已展示 Hub inventory/观测数据，客户端已加入本地进程锁；下一步完善凭证轮换、Hub 安装升级和远程多机验收。
 4. 按真实 CLI 能力接入 Codex 与 Claude Code Adapter，验证 workspace 隔离、审批、日志脱敏、执行取消和离线恢复；逐步开放对应能力。
 5. 补齐多用户 RBAC、Hub 凭证治理、告警、升级/回滚、备份恢复及多机故障演练，再开放多机器生产管理。
 
@@ -136,4 +136,4 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 
 ## 验收边界
 
-本 ADR 记录目标架构与协议约束。当前 OpenClaw 本机 Adapter 支持全套已迁移的 Messenger 实例操作，但尚无 Hub 守护进程安装/升级、强制取消、工作台 Hub 管理/RBAC、远程机器生产验收或 Codex/Claude Adapter。其余能力只有经过实现、测试和运维验收后，才可更新产品能力声明。
+本 ADR 记录目标架构与协议约束。当前 OpenClaw 本机 Adapter 支持全套已迁移的 Messenger 实例操作，Hub 客户端已具备本地状态库进程锁，但尚无 Hub 守护进程安装/升级、强制取消、工作台 Hub 管理/RBAC、远程机器生产验收或 Codex/Claude Adapter。其余能力只有经过实现、测试和运维验收后，才可更新产品能力声明。
