@@ -142,8 +142,12 @@ def main() -> None:
         signum: signal.getsignal(signum)
         for signum in (signal.SIGINT, signal.SIGTERM)
     }
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        stop_requested.set()
+        client.request_shutdown()
+
     for signum in previous_handlers:
-        signal.signal(signum, lambda _signum, _frame: stop_requested.set())
+        signal.signal(signum, request_shutdown)
     try:
         while not stop_requested.is_set():
             try:

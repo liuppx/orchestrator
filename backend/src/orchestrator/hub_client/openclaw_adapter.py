@@ -25,9 +25,14 @@ from orchestrator.protocols.hub_v1 import (
     RuntimeObservedState,
 )
 from orchestrator.models import BotInstanceCreateRequest
-from orchestrator.services.openclaw import OpenClawRuntimeConfig, OpenClawRuntimeService
+from orchestrator.services.openclaw import (
+    OpenClawCommandCancelled,
+    OpenClawCommandTimeout,
+    OpenClawRuntimeConfig,
+    OpenClawRuntimeService,
+)
 
-from .core import AdapterExecution, AdapterExecutionContext
+from .core import AdapterExecution, AdapterExecutionContext, AdapterExecutionUncertain
 
 
 MAX_LOG_SECTION_BYTES = 18 * 1024
@@ -90,6 +95,7 @@ class OpenClawAdapter:
             router_api_key=settings.router_api_key,
             port_range_start=settings.instance_port_start,
             port_range_end=settings.instance_port_end,
+            command_timeout_seconds=settings.hub_openclaw_command_timeout_seconds,
             openclaw_prefix=settings.openclaw_prefix,
             database_url=database_url,
             secret_store_dir=(
@@ -170,7 +176,16 @@ class OpenClawAdapter:
         return instances
 
     def execute(self, command: HubCommandV1, context: AdapterExecutionContext) -> AdapterExecution:
+        try:
+            return self._execute(command, context)
+        except OpenClawCommandTimeout as exc:
+            raise AdapterExecutionUncertain("COMMAND_TIMEOUT") from exc
+        except OpenClawCommandCancelled as exc:
+            raise AdapterExecutionUncertain("COMMAND_CANCELLED") from exc
+
+    def _execute(self, command: HubCommandV1, context: AdapterExecutionContext) -> AdapterExecution:
         context.raise_if_cancelled()
+        cancellation_requested = lambda: context.cancellation_requested
         if command.operation == HubCommandOperation.CREATE_INSTANCE:
             return self._create_instance(command, context)
         if command.operation == HubCommandOperation.INSPECT_INSTANCE:
@@ -202,7 +217,11 @@ class OpenClawAdapter:
             if not isinstance(payload, HubOpenClawModelPayloadV1):
                 return AdapterExecution(False, RuntimeObservedState.UNSUPPORTED, "INVALID_OPERATION_PAYLOAD")
             try:
-                updated = self.service.update_instance_model(command.target_instance_id, payload.model)
+                updated = self.service.update_instance_model(
+                    command.target_instance_id,
+                    payload.model,
+                    cancellation_requested=cancellation_requested,
+                )
             except KeyError:
                 return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
             return AdapterExecution(
@@ -246,6 +265,7 @@ class OpenClawAdapter:
                 diagnosis = self.service.diagnose_instance(
                     command.target_instance_id,
                     auto_recover=payload.auto_recover,
+                    cancellation_requested=cancellation_requested,
                 )
             except KeyError:
                 return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
@@ -298,7 +318,10 @@ class OpenClawAdapter:
             )
         if command.operation == HubCommandOperation.PAIR_WHATSAPP:
             try:
-                pairing = self.service.pair_whatsapp(command.target_instance_id)
+                pairing = self.service.pair_whatsapp(
+                    command.target_instance_id,
+                    cancellation_requested=cancellation_requested,
+                )
             except KeyError:
                 return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
             record = self.service.get_instance_raw(command.target_instance_id)
@@ -316,10 +339,16 @@ class OpenClawAdapter:
                 ),
             )
         if command.operation == HubCommandOperation.START_INSTANCE:
-            self.service.start_instance(command.target_instance_id)
+            self.service.start_instance(
+                command.target_instance_id,
+                cancellation_requested=cancellation_requested,
+            )
             expected_state = RuntimeObservedState.RUNNING
         elif command.operation == HubCommandOperation.STOP_INSTANCE:
-            self.service.stop_instance(command.target_instance_id)
+            self.service.stop_instance(
+                command.target_instance_id,
+                cancellation_requested=cancellation_requested,
+            )
             expected_state = RuntimeObservedState.STOPPED
         else:
             return AdapterExecution(False, RuntimeObservedState.UNSUPPORTED, "UNSUPPORTED")

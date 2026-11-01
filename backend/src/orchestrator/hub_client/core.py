@@ -90,7 +90,13 @@ class AdapterExecutionContext:
 
     def raise_if_cancelled(self) -> None:
         if self.cancellation_requested:
-            raise RuntimeError("Hub command cancellation was requested")
+            raise AdapterExecutionUncertain("COMMAND_CANCELLED")
+
+
+class AdapterExecutionUncertain(RuntimeError):
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,8 @@ class HubClient:
         if len(self._adapters_by_type) != len(self.adapters):
             raise ValueError("Hub adapters must have unique runtime_type values")
         self.process_lock = HubProcessLock(config.state_path)
+        self._shutdown_requested = threading.Event()
+        self._active_execution_context: AdapterExecutionContext | None = None
         try:
             self.store = HubStateStore(config.state_path)
             stored_hub_id = self.store.get_meta("hub_id")
@@ -180,6 +188,12 @@ class HubClient:
             self.store.close()
         finally:
             self.process_lock.close()
+
+    def request_shutdown(self) -> None:
+        self._shutdown_requested.set()
+        active_context = self._active_execution_context
+        if active_context is not None:
+            active_context.request_cancellation()
 
     def _heartbeat_payload(self) -> HubHeartbeatRequestV1:
         return HubHeartbeatRequestV1(
@@ -328,46 +342,59 @@ class HubClient:
         command: HubCommandV1,
         operation: Callable[[AdapterExecutionContext], AdapterExecution | None],
         initial_lease: HubCommandLeaseV1,
-    ) -> tuple[AdapterExecution | None, bool]:
+    ) -> tuple[AdapterExecution | None, str | None]:
         context = AdapterExecutionContext()
+        self._active_execution_context = context
+        if self._shutdown_requested.is_set():
+            context.request_cancellation()
         lease_deadline = self._lease_deadline(initial_lease)
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hub-command") as executor:
-            future = executor.submit(operation, context)
-            lease_lost = False
-            while not future.done():
-                remaining = lease_deadline - time.monotonic()
-                if remaining <= 0:
-                    lease_lost = True
-                    break
-                _, not_done = wait((future,), timeout=min(self.lease_renew_interval_seconds, remaining))
-                if not not_done:
-                    break
-                try:
-                    renewed = self._renew_command_lease(command)
-                except HubTransportError as exc:
-                    if exc.status_code in {401, 403, 404, 409}:
-                        lease_lost = True
-                        break
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hub-command") as executor:
+                future = executor.submit(operation, context)
+                lease_lost = False
+                while not future.done():
                     remaining = lease_deadline - time.monotonic()
                     if remaining <= 0:
                         lease_lost = True
                         break
-                    wait((future,), timeout=min(self.lease_retry_interval_seconds, remaining))
-                    continue
-                lease_deadline = self._lease_deadline(renewed)
+                    _, not_done = wait((future,), timeout=min(self.lease_renew_interval_seconds, remaining))
+                    if not not_done:
+                        break
+                    try:
+                        renewed = self._renew_command_lease(command)
+                    except HubTransportError as exc:
+                        if exc.status_code in {401, 403, 404, 409}:
+                            lease_lost = True
+                            break
+                        remaining = lease_deadline - time.monotonic()
+                        if remaining <= 0:
+                            lease_lost = True
+                            break
+                        wait((future,), timeout=min(self.lease_retry_interval_seconds, remaining))
+                        continue
+                    lease_deadline = self._lease_deadline(renewed)
 
-            if not lease_lost and time.monotonic() >= lease_deadline:
-                lease_lost = True
-            if lease_lost:
-                context.request_cancellation()
-                # Do not allow this Hub process to poll another attempt until its Adapter
-                # has stopped the local operation and reported the outcome as ambiguous.
-                try:
-                    future.result()
-                except Exception:  # noqa: BLE001
-                    pass
-                return None, True
-            return future.result(), False
+                if not lease_lost and not future.done() and time.monotonic() >= lease_deadline:
+                    lease_lost = True
+                if lease_lost:
+                    context.request_cancellation()
+                    # Do not allow this Hub process to poll another attempt until its Adapter
+                    # has stopped the local operation and reported the outcome as ambiguous.
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return None, "LEASE_LOST"
+                if self._shutdown_requested.is_set() and not future.done():
+                    context.request_cancellation()
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return None, "HUB_SHUTDOWN"
+                return future.result(), None
+        finally:
+            self._active_execution_context = None
 
     def _process_command(self, command: HubCommandV1) -> bool:
         existing = self.store.command(str(command.command_id))
@@ -436,17 +463,17 @@ class HubClient:
         self._append_command_event(command, HubCommandPhase.RUNNING)
         try:
             operation = adapter.recover if recovering else adapter.execute
-            execution, lease_lost = self._run_adapter_operation(
+            execution, uncertainty_reason = self._run_adapter_operation(
                 command,
                 lambda context: operation(command, context),
                 initial_lease,
             )
-            if lease_lost:
+            if uncertainty_reason is not None:
                 self._append_command_event(
                     command,
                     HubCommandPhase.UNKNOWN,
                     observed_state=RuntimeObservedState.UNKNOWN,
-                    error_code="LEASE_LOST",
+                    error_code=uncertainty_reason,
                 )
                 return True
             if recovering and execution is None:
@@ -485,6 +512,14 @@ class HubClient:
                 error_code=execution.error_code,
                 result=execution.result,
             )
+        except AdapterExecutionUncertain as exc:
+            self._append_command_event(
+                command,
+                HubCommandPhase.UNKNOWN,
+                observed_state=RuntimeObservedState.UNKNOWN,
+                error_code=exc.error_code,
+            )
+            return True
         except Exception:  # noqa: BLE001
             if recovering:
                 self._append_command_event(

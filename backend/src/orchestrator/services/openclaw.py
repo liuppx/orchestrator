@@ -6,9 +6,11 @@ import hashlib
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +42,14 @@ from orchestrator.models import (
 
 TEMPLATE_GENERIC = "generic"
 TEMPLATE_ECOM_TOY = "ecommerce-toy"
+
+
+class OpenClawCommandCancelled(RuntimeError):
+    pass
+
+
+class OpenClawCommandTimeout(RuntimeError):
+    pass
 
 
 def now_rfc3339() -> str:
@@ -86,6 +96,8 @@ class OpenClawRuntimeConfig:
     database_url: str | None = None
     secret_store_dir: Path | None = None
     node_id: str = "local"
+    command_timeout_seconds: float = 300.0
+    command_termination_grace_seconds: float = 3.0
 
 
 class OpenClawRuntimeService:
@@ -701,27 +713,109 @@ class OpenClawRuntimeService:
         prefix = (self.cfg.openclaw_prefix or "").strip()
         return f"{prefix} {base}".strip() if prefix else base
 
-    def run_shell(self, cmd: str) -> str:
-        completed = subprocess.run(
+    @staticmethod
+    def _signal_process_group_id(process_group_id: int, signum: int) -> None:
+        try:
+            os.killpg(process_group_id, signum)
+        except ProcessLookupError:
+            pass
+
+    @classmethod
+    def _signal_process_group(cls, process: subprocess.Popen[str], signum: int) -> None:
+        try:
+            cls._signal_process_group_id(process.pid, signum)
+        except OSError:
+            if process.poll() is None:
+                process.send_signal(signum)
+
+    def _terminate_background_process_group(self, pid: int) -> None:
+        try:
+            process_group_id = os.getpgid(pid)
+        except ProcessLookupError:
+            return
+        self._signal_process_group_id(process_group_id, signal.SIGTERM)
+        deadline = time.monotonic() + self.cfg.command_termination_grace_seconds
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        self._signal_process_group_id(process_group_id, signal.SIGKILL)
+
+    def _terminate_process_group(self, process: subprocess.Popen[str]) -> tuple[str, str]:
+        self._signal_process_group(process, signal.SIGTERM)
+        try:
+            process.communicate(timeout=self.cfg.command_termination_grace_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+        self._signal_process_group(process, signal.SIGKILL)
+        return process.communicate()
+
+    def _run_shell_process(
+        self,
+        cmd: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> tuple[int, str, str]:
+        if cancellation_requested and cancellation_requested():
+            raise OpenClawCommandCancelled("OpenClaw command was cancelled")
+        process = subprocess.Popen(
             ["bash", "-lc", cmd],
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
-        if completed.returncode == 0:
-            return (completed.stdout or "").strip()
+        deadline = time.monotonic() + self.cfg.command_timeout_seconds
+        try:
+            while True:
+                if cancellation_requested and cancellation_requested():
+                    self._terminate_process_group(process)
+                    raise OpenClawCommandCancelled("OpenClaw command was cancelled")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._terminate_process_group(process)
+                    raise OpenClawCommandTimeout(
+                        f"OpenClaw command exceeded {self.cfg.command_timeout_seconds:g}s timeout"
+                    )
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                    return process.returncode or 0, stdout or "", stderr or ""
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            if process.poll() is None:
+                self._terminate_process_group(process)
+            raise
+
+    def run_shell(
+        self,
+        cmd: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> str:
+        returncode, stdout, stderr = self._run_shell_process(
+            cmd,
+            cancellation_requested=cancellation_requested,
+        )
+        if returncode == 0:
+            return stdout.strip()
         raise RuntimeError(
-            f"command failed: {cmd}\nstdout: {(completed.stdout or '').strip()}\nstderr: {(completed.stderr or '').strip()}"
+            f"command failed: {cmd}\nstdout: {stdout.strip()}\nstderr: {stderr.strip()}"
         )
 
-    def run_shell_capture(self, cmd: str) -> tuple[bool, str, str]:
-        completed = subprocess.run(
-            ["bash", "-lc", cmd],
-            check=False,
-            capture_output=True,
-            text=True,
+    def run_shell_capture(
+        self,
+        cmd: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> tuple[bool, str, str]:
+        returncode, stdout, stderr = self._run_shell_process(
+            cmd,
+            cancellation_requested=cancellation_requested,
         )
-        return completed.returncode == 0, completed.stdout or "", completed.stderr or ""
+        return returncode == 0, stdout, stderr
 
     def is_pid_alive(self, pid: int) -> bool:
         try:
@@ -776,9 +870,16 @@ class OpenClawRuntimeService:
                 return value
         return f"ws://127.0.0.1:{fallback_port}"
 
-    def probe_whatsapp_status(self, profile: str, fallback_port: int) -> dict[str, Any]:
+    def probe_whatsapp_status(
+        self,
+        profile: str,
+        fallback_port: int,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         ok, stdout, stderr = self.run_shell_capture(
-            f"openclaw --profile {profile} channels status --json --probe 2>&1"
+            f"openclaw --profile {profile} channels status --json --probe 2>&1",
+            cancellation_requested=cancellation_requested,
         )
         combined = f"{stdout}\n{stderr}"
         snap: dict[str, Any] = {
@@ -818,11 +919,17 @@ class OpenClawRuntimeService:
                     snap["last_outbound_at"] = self.value_as_int(first.get("lastOutboundAt"))
         return snap
 
-    def has_established_transport(self, pid: int | None) -> bool:
+    def has_established_transport(
+        self,
+        pid: int | None,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> bool:
         if pid is None:
             return False
         ok, stdout, _stderr = self.run_shell_capture(
-            f"lsof -Pan -p {pid} -iTCP -sTCP:ESTABLISHED 2>/dev/null || true"
+            f"lsof -Pan -p {pid} -iTCP -sTCP:ESTABLISHED 2>/dev/null || true",
+            cancellation_requested=cancellation_requested,
         )
         _ = ok
         return any(":443" in line for line in stdout.splitlines())
@@ -892,7 +999,12 @@ class OpenClawRuntimeService:
             shutil.rmtree(profile_install_path)
         shutil.copytree(global_install_path, profile_install_path)
 
-    def configure_profile(self, raw: dict[str, Any]) -> None:
+    def configure_profile(
+        self,
+        raw: dict[str, Any],
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> None:
         self.ensure_instance_dirs(raw)
         profile = str(raw["profile"])
         workspace = Path(str(raw["root_dir"])) / "workspace"
@@ -930,7 +1042,7 @@ class OpenClawRuntimeService:
         elif raw["kind"] == "dingtalk":
             if not raw.get("dingtalk_client_secret"):
                 raise RuntimeError("DingTalk client secret is unavailable from the configured local secret store")
-            plugin_list = self.run_shell("openclaw plugins list || true")
+            plugin_list = self.run_shell("openclaw plugins list || true", cancellation_requested=cancellation_requested)
             if "dingtalk" not in plugin_list:
                 raise RuntimeError(
                     "dingtalk plugin not installed. run: openclaw plugins install @soimy/dingtalk"
@@ -956,9 +1068,14 @@ class OpenClawRuntimeService:
                 ]
             )
         for cmd in commands:
-            self.run_shell(cmd)
+            self.run_shell(cmd, cancellation_requested=cancellation_requested)
 
-    def start_instance_process(self, raw: dict[str, Any]) -> int:
+    def start_instance_process(
+        self,
+        raw: dict[str, Any],
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> int:
         log_file = Path(str(raw["logs_dir"])) / "gateway.log"
         self.append_log_banner(
             log_file,
@@ -973,13 +1090,24 @@ class OpenClawRuntimeService:
             str(raw["profile"]),
             f"gateway run --allow-unconfigured --port {int(raw['port'])}",
         )
-        pid_text = self.run_shell(f"nohup {openclaw_cmd} >> {shell_quote(str(log_file))} 2>&1 & echo $!")
+        pid_text = self.run_shell(
+            f"nohup {openclaw_cmd} >> {shell_quote(str(log_file))} 2>&1 & echo $!",
+            cancellation_requested=cancellation_requested,
+        )
         try:
             launcher_pid = int(pid_text.strip())
         except ValueError as exc:
             self.write_instance_event(raw, "process_start_pid_parse_failed", {"pid_text": pid_text})
             raise RuntimeError(f"parse pid failed from '{pid_text}'") from exc
         for _ in range(24):
+            if cancellation_requested and cancellation_requested():
+                self._terminate_background_process_group(launcher_pid)
+                self.write_instance_event(
+                    raw,
+                    "process_start_cancelled",
+                    {"launcher_pid": launcher_pid},
+                )
+                raise OpenClawCommandCancelled("OpenClaw command was cancelled")
             gateway_pid = self.find_gateway_pid_for_profile(str(raw["profile"]))
             if gateway_pid is not None:
                 self.write_instance_event(
@@ -996,7 +1124,12 @@ class OpenClawRuntimeService:
         )
         return launcher_pid
 
-    def stop_instance_process(self, raw: dict[str, Any]) -> None:
+    def stop_instance_process(
+        self,
+        raw: dict[str, Any],
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> None:
         log_file = Path(str(raw["logs_dir"])) / "gateway.log"
         self.append_log_banner(
             log_file,
@@ -1021,8 +1154,11 @@ class OpenClawRuntimeService:
                 pass
         try:
             self.run_shell(
-                f"pkill -f {shell_quote(f'openclaw --profile {raw['profile']} gateway run')} || true"
+                f"pkill -f {shell_quote(f'openclaw --profile {raw['profile']} gateway run')} || true",
+                cancellation_requested=cancellation_requested,
             )
+        except (OpenClawCommandCancelled, OpenClawCommandTimeout):
+            raise
         except RuntimeError:
             pass
         self.write_instance_event(raw, "process_stop_done", {"killed_pids": killed_pids})
@@ -1091,7 +1227,12 @@ class OpenClawRuntimeService:
         self.persist_db(db)
         return self._view_from_raw(instance_id, raw)
 
-    def start_instance(self, instance_id: str) -> BotInstanceActionResponse:
+    def start_instance(
+        self,
+        instance_id: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BotInstanceActionResponse:
         record = self.get_instance_raw(instance_id)
         if record is None:
             raise KeyError("instance not found")
@@ -1111,8 +1252,8 @@ class OpenClawRuntimeService:
         raw["updated_at"] = now_rfc3339()
         self.persist_db(db)
         try:
-            self.configure_profile(raw)
-            new_pid = self.start_instance_process(raw)
+            self.configure_profile(raw, cancellation_requested=cancellation_requested)
+            new_pid = self.start_instance_process(raw, cancellation_requested=cancellation_requested)
         except RuntimeError as exc:
             raw["status"] = "error"
             raw["last_error"] = str(exc)
@@ -1129,7 +1270,12 @@ class OpenClawRuntimeService:
             instance=self._view_from_raw(instance_id, raw),
         )
 
-    def stop_instance(self, instance_id: str) -> BotInstanceActionResponse:
+    def stop_instance(
+        self,
+        instance_id: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BotInstanceActionResponse:
         record = self.get_instance_raw(instance_id)
         if record is None:
             raise KeyError("instance not found")
@@ -1140,7 +1286,7 @@ class OpenClawRuntimeService:
         self.persist_db(db)
         self.write_instance_event(raw, "stop_requested", {"pid": raw.get("pid")})
         try:
-            self.stop_instance_process(raw)
+            self.stop_instance_process(raw, cancellation_requested=cancellation_requested)
         except RuntimeError as exc:
             raw["status"] = "error"
             raw["last_error"] = str(exc)
@@ -1158,7 +1304,12 @@ class OpenClawRuntimeService:
             instance=self._view_from_raw(instance_id, raw),
         )
 
-    def launch_whatsapp_pair(self, raw: dict[str, Any]) -> int:
+    def launch_whatsapp_pair(
+        self,
+        raw: dict[str, Any],
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> int:
         log_file = Path(str(raw["logs_dir"])) / "pair.log"
         self.append_log_banner(
             log_file,
@@ -1173,16 +1324,28 @@ class OpenClawRuntimeService:
             str(raw["profile"]),
             "channels login --channel whatsapp --verbose",
         )
-        pid_text = self.run_shell(f"nohup {openclaw_cmd} >> {shell_quote(str(log_file))} 2>&1 & echo $!")
+        pid_text = self.run_shell(
+            f"nohup {openclaw_cmd} >> {shell_quote(str(log_file))} 2>&1 & echo $!",
+            cancellation_requested=cancellation_requested,
+        )
         try:
             pair_pid = int(pid_text.strip())
         except ValueError as exc:
             self.write_instance_event(raw, "pair_start_pid_parse_failed", {"pid_text": pid_text})
             raise RuntimeError(f"parse pair pid failed from '{pid_text}'") from exc
+        if cancellation_requested and cancellation_requested():
+            self._terminate_background_process_group(pair_pid)
+            self.write_instance_event(raw, "pair_start_cancelled", {"pair_pid": pair_pid})
+            raise OpenClawCommandCancelled("OpenClaw command was cancelled")
         self.write_instance_event(raw, "pair_start_ok", {"pair_pid": pair_pid})
         return pair_pid
 
-    def pair_whatsapp(self, instance_id: str) -> BotInstancePairResponse:
+    def pair_whatsapp(
+        self,
+        instance_id: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BotInstancePairResponse:
         record = self.get_instance_raw(instance_id)
         if record is None:
             raise KeyError("instance not found")
@@ -1191,7 +1354,9 @@ class OpenClawRuntimeService:
             raise ValueError("pair-whatsapp is only valid for whatsapp instance")
         self.write_instance_event(raw, "pair_requested", {"kind": str(raw.get("kind", ""))})
         try:
-            pair_pid = self.launch_whatsapp_pair(raw)
+            pair_pid = self.launch_whatsapp_pair(raw, cancellation_requested=cancellation_requested)
+        except (OpenClawCommandCancelled, OpenClawCommandTimeout):
+            raise
         except RuntimeError as exc:
             self.write_instance_event(raw, "pair_launch_failed", {"error": str(exc)})
             raise RuntimeError(f"pair launch failed: {exc}") from exc
@@ -1202,7 +1367,13 @@ class OpenClawRuntimeService:
             pair_log=str(Path(str(raw["logs_dir"])) / "pair.log"),
         )
 
-    def update_instance_model(self, instance_id: str, model: str) -> BotInstanceView:
+    def update_instance_model(
+        self,
+        instance_id: str,
+        model: str,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BotInstanceView:
         selected_model = model.strip()
         if not selected_model:
             raise ValueError("model is required")
@@ -1217,7 +1388,7 @@ class OpenClawRuntimeService:
         raw["updated_at"] = now_rfc3339()
 
         if raw.get("status") == "running":
-            self.configure_profile(raw)
+            self.configure_profile(raw, cancellation_requested=cancellation_requested)
 
         self.persist_db(db)
         return self._view_from_raw(instance_id, raw)
@@ -1289,7 +1460,13 @@ class OpenClawRuntimeService:
             "archived": archived,
         }
 
-    def diagnose_instance(self, instance_id: str, auto_recover: bool = False) -> BotInstanceDiagnoseResponse:
+    def diagnose_instance(
+        self,
+        instance_id: str,
+        auto_recover: bool = False,
+        *,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> BotInstanceDiagnoseResponse:
         _ = auto_recover
         record = self.get_instance_raw(instance_id)
         if record is None:
@@ -1309,8 +1486,15 @@ class OpenClawRuntimeService:
         else:
             effective_pid = self.find_gateway_pid_for_profile(str(raw["profile"]))
 
-        probe = self.probe_whatsapp_status(str(raw["profile"]), int(raw["port"]))
-        transport_established = self.has_established_transport(effective_pid)
+        probe = self.probe_whatsapp_status(
+            str(raw["profile"]),
+            int(raw["port"]),
+            cancellation_requested=cancellation_requested,
+        )
+        transport_established = self.has_established_transport(
+            effective_pid,
+            cancellation_requested=cancellation_requested,
+        )
         router_key_present = self.router_api_key_present(str(raw["profile"]))
         no_api_key_error_seen = self.has_no_api_key_error(raw)
         recommended_action = self.detect_recommended_action(

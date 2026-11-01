@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     hub_openclaw_runtime_dir: Path | None = Field(default=None, alias="HUB_OPENCLAW_RUNTIME_DIR")
     hub_openclaw_instances_root: Path | None = Field(default=None, alias="HUB_OPENCLAW_INSTANCES_ROOT")
     hub_openclaw_secret_store_dir: Path | None = Field(default=None, alias="HUB_OPENCLAW_SECRET_STORE_DIR")
+    hub_openclaw_command_timeout_seconds: int = Field(default=300, alias="HUB_OPENCLAW_COMMAND_TIMEOUT_SECONDS", gt=0, le=3600)
     hub_command_encryption_key: str | None = Field(default=None, alias="HUB_COMMAND_ENCRYPTION_KEY")
     hub_command_encryption_keys: str = Field(default="{}", alias="HUB_COMMAND_ENCRYPTION_KEYS")
     hub_request_timeout_seconds: int = Field(default=15, alias="HUB_CLIENT_REQUEST_TIMEOUT_SECONDS", gt=0, le=300)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import signal
 import sys
 import tempfile
 import threading
@@ -16,6 +19,7 @@ from orchestrator.config import Settings
 from orchestrator.db import init_database
 from orchestrator.hub_client import (
     AdapterExecution,
+    AdapterExecutionContext,
     HubClient,
     HubClientConfig,
     HubStateStore,
@@ -23,6 +27,7 @@ from orchestrator.hub_client import (
     HttpHubTransport,
     load_hub_credential,
 )
+from orchestrator.hub_client.core import AdapterExecutionUncertain
 from orchestrator.hub_client.openclaw_adapter import OpenClawAdapter
 from orchestrator.hub_client.simulated import SimulatedAdapter
 from orchestrator.models import BotInstanceCreateRequest
@@ -41,7 +46,12 @@ from orchestrator.protocols.hub_v1 import (
     HubInventorySnapshotV1,
     RuntimeObservedState,
 )
-from orchestrator.services.openclaw import OpenClawRuntimeConfig, OpenClawRuntimeService
+from orchestrator.services.openclaw import (
+    OpenClawCommandCancelled,
+    OpenClawCommandTimeout,
+    OpenClawRuntimeConfig,
+    OpenClawRuntimeService,
+)
 
 
 class MemoryHubTransport:
@@ -283,6 +293,23 @@ class HubClientTest(unittest.TestCase):
         self.assertEqual(client.store.command(str(command.command_id))["status"], "succeeded")
         self.assertEqual(transport.events[4]["phase"], "succeeded")
 
+    def test_timed_out_adapter_operation_is_reported_unknown(self) -> None:
+        class TimedOutAdapter(SimulatedAdapter):
+            def execute(self, command, context):
+                raise AdapterExecutionUncertain("COMMAND_TIMEOUT")
+
+        command = self.make_command(HubCommandOperation.START_INSTANCE)
+        transport = MemoryHubTransport([command])
+        client = self.make_client(transport, TimedOutAdapter())
+        self.addCleanup(client.close)
+
+        client.run_once()
+
+        result = client.store.command(str(command.command_id))
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["result"]["error_code"], "COMMAND_TIMEOUT")
+        self.assertEqual(transport.events[3]["phase"], "unknown")
+
     def test_state_database_cannot_be_reused_for_another_hub(self) -> None:
         first = self.make_client(MemoryHubTransport(), SimulatedAdapter())
         first.close()
@@ -399,6 +426,218 @@ class HubClientTest(unittest.TestCase):
         result = client.store.command(str(command.command_id))
         self.assertEqual(result["status"], "unknown")
         self.assertEqual(result["result"]["error_code"], "LEASE_LOST")
+
+
+class OpenClawSubprocessTest(unittest.TestCase):
+    def make_service(
+        self,
+        root: Path,
+        *,
+        timeout_seconds: float,
+        termination_grace_seconds: float = 0.2,
+    ) -> OpenClawRuntimeService:
+        config = OpenClawRuntimeConfig(
+            state_file=root / "state.json",
+            instances_root=root / "instances",
+            runtime_dir=root / "runtime",
+            repo_root=root,
+            default_model="test-model",
+            model_allowlist=["test-model"],
+            router_base_url="https://router.example.test/v1",
+            router_api_key=None,
+            port_range_start=18800,
+            port_range_end=18899,
+            command_timeout_seconds=timeout_seconds,
+            command_termination_grace_seconds=termination_grace_seconds,
+        )
+        return OpenClawRuntimeService(config)
+
+    def test_timeout_terminates_shell_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir), timeout_seconds=0.15)
+            command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(30)')}"
+            started_at = time.monotonic()
+
+            with self.assertRaises(OpenClawCommandTimeout):
+                service.run_shell(command)
+
+            self.assertLess(time.monotonic() - started_at, 2)
+
+    @unittest.skipUnless(os.name == "posix", "OpenClaw Hub subprocess groups require POSIX")
+    def test_cancellation_kills_process_group_including_term_ignoring_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = self.make_service(root, timeout_seconds=10)
+            ready_file = root / "process-group"
+            child_code = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+            parent_code = (
+                "import os,subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                f"open({str(ready_file)!r},'w').write(str(os.getpgrp()));"
+                "time.sleep(30)"
+            )
+            command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_code)}"
+            cancellation = threading.Event()
+            errors: list[BaseException] = []
+
+            def run_command() -> None:
+                try:
+                    service.run_shell(command, cancellation_requested=cancellation.is_set)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            worker = threading.Thread(target=run_command)
+            worker.start()
+            deadline = time.monotonic() + 2
+            while not ready_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready_file.exists(), "subprocess did not signal readiness")
+            process_group = int(ready_file.read_text(encoding="utf-8"))
+            cancellation.set()
+            worker.join(4)
+
+            self.assertFalse(worker.is_alive(), "cancelled subprocess did not stop")
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OpenClawCommandCancelled)
+            group_deadline = time.monotonic() + 1
+            while time.monotonic() < group_deadline:
+                try:
+                    os.killpg(process_group, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.025)
+            else:
+                self.fail("subprocess group remained alive after cancellation")
+
+    @unittest.skipUnless(os.name == "posix", "OpenClaw Hub subprocess groups require POSIX")
+    def test_cancellation_during_startup_kills_detached_gateway_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = self.make_service(root, timeout_seconds=10)
+            ready_file = root / "gateway-ready"
+            gateway_code = (
+                "import os,time;"
+                f"open({str(ready_file)!r},'w').write(str(os.getpgrp()));"
+                "time.sleep(30)"
+            )
+            service.build_openclaw_cmd = lambda _profile, _args: (
+                f"{shlex.quote(sys.executable)} -c {shlex.quote(gateway_code)}"
+            )
+            service.find_gateway_pid_for_profile = lambda _profile: None
+            raw = {
+                "profile": "hub-start-cancel-test",
+                "port": 18801,
+                "logs_dir": str(root / "logs"),
+            }
+            cancellation = threading.Event()
+            errors: list[BaseException] = []
+
+            def start_instance() -> None:
+                try:
+                    service.start_instance_process(raw, cancellation_requested=cancellation.is_set)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            worker = threading.Thread(target=start_instance)
+            worker.start()
+            process_group: int | None = None
+            try:
+                deadline = time.monotonic() + 2
+                while not ready_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready_file.exists(), "gateway did not signal readiness")
+                process_group = int(ready_file.read_text(encoding="utf-8"))
+                cancellation.set()
+                worker.join(3)
+
+                self.assertFalse(worker.is_alive(), "cancelled gateway startup did not stop")
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], OpenClawCommandCancelled)
+                group_deadline = time.monotonic() + 1.5
+                while time.monotonic() < group_deadline:
+                    try:
+                        os.killpg(process_group, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.025)
+                else:
+                    self.fail("detached gateway process group remained alive after cancellation")
+            finally:
+                if process_group is not None:
+                    try:
+                        os.killpg(process_group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                worker.join(1)
+
+
+class OpenClawRecoveryIntegrationTest(unittest.TestCase):
+    def test_restarted_hub_recognizes_a_completed_openclaw_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_path = root / "hub-client.sqlite3"
+            settings = Settings(
+                HUB_REPO_ROOT=str(root),
+                HUB_RUNTIME_DIR=str(root / "hub-runtime"),
+                HUB_INSTANCES_ROOT=str(root / "instances"),
+                HUB_ID="hub-openclaw-recovery",
+            )
+            adapter = OpenClawAdapter.from_settings(settings)
+            instance_id = "hub-recovery-instance"
+            created = adapter.service.create_instance(
+                BotInstanceCreateRequest(kind="whatsapp", name="Recovery test"),
+                owner_wallet="machine-hub",
+                instance_id=instance_id,
+            )
+            db, raw = adapter.service.get_instance_raw(created.id)
+            raw.update({"desired_state": "running", "status": "running", "pid": 12345})
+            adapter.service.persist_db(db)
+            adapter.service.is_pid_alive = lambda _pid: True
+
+            now = datetime.now(UTC)
+            first_attempt = HubCommandV1(
+                command_id=uuid4(),
+                target_instance_id=instance_id,
+                runtime_type="openclaw",
+                operation=HubCommandOperation.START_INSTANCE,
+                desired_revision=1,
+                attempt=1,
+                trace_id="openclaw-recovery-test",
+                issued_at=now - timedelta(seconds=1),
+                expires_at=now + timedelta(minutes=5),
+            )
+            store = HubStateStore(state_path)
+            store.transition_command(
+                first_attempt.model_dump(mode="json"),
+                HubCommandPhase.RUNNING.value,
+                lambda sequence: HubCommandEventV1(
+                    type="command",
+                    event_id=uuid4(),
+                    sequence=sequence,
+                    occurred_at=datetime.now(UTC),
+                    command_id=first_attempt.command_id,
+                    desired_revision=first_attempt.desired_revision,
+                    attempt=first_attempt.attempt,
+                    phase=HubCommandPhase.RUNNING,
+                ),
+                lambda event: event.model_dump(mode="json"),
+            )
+            store.close()
+
+            retry = first_attempt.model_copy(update={"attempt": 2})
+            transport = MemoryHubTransport([retry])
+            client = HubClient(
+                HubClientConfig.local(settings.hub_id, settings.hub_version, state_path),
+                transport,
+                [adapter],
+            )
+            self.addCleanup(client.close)
+            with patch.object(adapter.service, "start_instance", side_effect=AssertionError("start must not repeat")):
+                client.run_once()
+
+            result = client.store.command(str(retry.command_id))
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual(transport.events[4]["phase"], "succeeded")
 
 
 class OpenClawStateMigrationTest(unittest.TestCase):
