@@ -52,13 +52,28 @@ scripts/run_machine_hub.sh --check --openclaw
 
 预检必须通过，随后用 systemd user 或 LaunchAgent 启动常驻 Hub。记录启动时间、Hub 版本、hostname、OS、Adapter capabilities，并在 Backend 数据库确认两台 Hub 都是 `online`。两台 Hub 的 inventory revision 应各自从 1 开始递增，不能互相覆盖。
 
-## 3. 正常命令闭环
+## 3. 自动化只读预检
+
+两台 Hub 都已启动、且各有一个已存在并声明 `inspect_instance` capability 的 staging OpenClaw 实例后，可通过管理员 API 做只读闭环检查。该脚本不会创建、启动或停止实例；它只显式向两台 Hub 下发 `inspect_instance`，轮询命令终态并在标准输出生成 JSON 证据：
+
+```bash
+export HUB_ADMIN_TOKEN='从受控 Secret 来源读取'
+python3 scripts/accept_machine_hub_staging.py \
+  --backend-url "$BACKEND_URL" \
+  --hub hub-staging-a=openclaw-staging-a \
+  --hub hub-staging-b=openclaw-staging-b \
+  > hub-staging-acceptance.json
+```
+
+替换为各机器 inventory 中实际的 Hub ID 和实例 ID。凭证只从 `HUB_ADMIN_TOKEN` 环境变量读取，不放入参数或 JSON 证据。远程 Backend 必须使用 HTTPS；只有本机回环地址允许 HTTP。两项检查都为 `succeeded` 才算本项通过；超时、命令失败或 API 鉴权错误均需保留报告并人工排查。状态查询接口只返回状态与事件摘要，不返回任意命令结果或日志。
+
+## 4. 正常命令闭环
 
 在每台机器各准备一个仅用于 staging 的 OpenClaw 实例，然后通过受控命令 API 执行 `inspect_instance`、`start_instance`、`stop_instance`。命令请求必须使用唯一 `idempotency_key` 和递增 `desired_revision`，不能通过 shell 字段绕过 typed payload。
 
 逐项核对：命令经历 `accepted -> running -> succeeded/failed`，Backend 保存 attempt、lease、trace 和事件 sequence；重复提交同一幂等键返回同一 `command_id`；同一实例的旧 revision 不能覆盖新 revision；Hub 离线时命令不会被 Backend 直接改成本机成功。
 
-## 4. 租约失效与取消
+## 5. 租约失效与取消
 
 在 staging 临时制造一个可控的长 OpenClaw CLI 操作（例如仅对 staging profile 使用 wrapper 延迟，不修改生产 PATH），然后验证以下两种情况：
 
@@ -72,7 +87,7 @@ scripts/run_machine_hub.sh --check --openclaw
 - 命令结果为 `unknown`，错误码为 `LEASE_LOST`、`COMMAND_CANCELLED` 或 `COMMAND_TIMEOUT`，不能误报 `failed` 后自动重试。
 - 用 `ps -eo pid,ppid,pgid,args` 和按 profile 的 `pgrep` 检查没有残留的 Hub 管理进程组。主动脱离原进程组的后代必须单独记录并阻断上线。
 
-## 5. Hub 重启恢复
+## 6. Hub 重启恢复
 
 在 `start_instance` 已产生本机副作用、但终态事件尚未回报时停止 Hub，保留本机 SQLite 和 OpenClaw 状态目录，重新启动同一 `HUB_ID` 的服务。检查：
 
@@ -81,11 +96,11 @@ scripts/run_machine_hub.sh --check --openclaw
 - `pair_whatsapp` 等无法安全证明外部副作用的操作保持 `unknown`，不会盲目重放。
 - 删除或重建 Hub SQLite、改用另一台机器的状态库都应被拒绝或视为新的 Hub，不得静默接管旧实例。
 
-## 6. 凭证轮换与隔离
+## 7. 凭证轮换与隔离
 
 为同一 Hub 签发第二个凭证，原子替换本机凭证文件，确认下一次 heartbeat 使用新 token；随后撤销旧凭证并确认旧 token 得到 `401`。再用 Hub-A 的 token 请求 Hub-B 的 heartbeat/inventory，必须得到 `401`，且 Hub-B 的状态、inventory 和事件没有变化。
 
-## 7. 上线门槛
+## 8. 上线门槛
 
 以下任一项未满足，就只允许 staging，不得宣称多机生产可用：
 

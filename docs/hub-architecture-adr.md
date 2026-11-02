@@ -78,6 +78,7 @@ Backend 负责“谁可以让哪台机器上的哪个实例做什么”；Hub �
 | POST | `/hubs/{hub_id}/commands/{command_id}/lease` | Hub 自身 Bearer 凭证 | 按 command ID 与 attempt 续租；已过期、被回收或 attempt 不匹配时返回 409 |
 | POST | `/hubs/{hub_id}/events` | Hub 自身 Bearer 凭证 | 按连续 sequence 批量写入事件；相同事件重放返回已确认 cursor；有效 lease 内的运行进度续租 |
 | POST | `/hubs/{hub_id}/commands` | 管理员 `HUB_ADMIN_TOKEN` | 受控调试/运维入口；仅允许已上报能力且在最新 inventory 中存在的实例，支持每 Hub 幂等键，最长 24 小时；状态操作 revision 必须递增 |
+| GET | `/hubs/{hub_id}/commands/{command_id}` | 管理员 `HUB_ADMIN_TOKEN` | 查询命令状态、attempt、trace 和受限事件摘要；不返回命令 payload 或任意结果/日志 |
 
 已登录工作台的 OpenClaw start/stop 路由会在 Backend 校验实例 owner 后调用相同命令服务，并使用钱包身份写入审计事件；工作台不会获得 Hub 凭证或直接连接 Hub。
 
