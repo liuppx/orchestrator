@@ -233,13 +233,6 @@ agents/custom/trader/config/trader.env
 agents/custom/trader/config/strategies.yaml
 *.swp
 
-# Project skill local task state
-.project-task.json
-.project-lifecycle.json
-.project-execution.json
-.project-execution/
-.project-task-*.json
-.project-lifecycle-*.json
-.project-execution-*.json
-.project-execution-*/
+# YeYing Project local task state
+/.project/
 .playwright-cli
