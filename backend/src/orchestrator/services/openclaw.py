@@ -719,6 +719,14 @@ class OpenClawRuntimeService:
             os.killpg(process_group_id, signum)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # A detached launcher can outlive the shell that created its session. If
+            # the platform denies the group operation, still try the group leader;
+            # cancellation must not turn into an unrelated PermissionError.
+            try:
+                os.kill(process_group_id, signum)
+            except OSError:
+                pass
 
     @classmethod
     def _signal_process_group(cls, process: subprocess.Popen[str], signum: int) -> None:
@@ -731,7 +739,7 @@ class OpenClawRuntimeService:
     def _terminate_background_process_group(self, pid: int) -> None:
         try:
             process_group_id = os.getpgid(pid)
-        except ProcessLookupError:
+        except OSError:
             return
         self._signal_process_group_id(process_group_id, signal.SIGTERM)
         deadline = time.monotonic() + self.cfg.command_termination_grace_seconds
@@ -740,6 +748,8 @@ class OpenClawRuntimeService:
                 os.killpg(process_group_id, 0)
             except ProcessLookupError:
                 return
+            except PermissionError:
+                break
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
         self._signal_process_group_id(process_group_id, signal.SIGKILL)
 

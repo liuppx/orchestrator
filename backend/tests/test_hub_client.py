@@ -427,6 +427,49 @@ class HubClientTest(unittest.TestCase):
         self.assertEqual(result["status"], "unknown")
         self.assertEqual(result["result"]["error_code"], "LEASE_LOST")
 
+    def test_shutdown_requests_adapter_cancellation_before_client_exits(self) -> None:
+        class ShutdownAdapter(SimulatedAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.started = threading.Event()
+
+            def execute(self, command, context):
+                self.started.set()
+                if context.wait_for_cancellation(2):
+                    raise AdapterExecutionUncertain("COMMAND_CANCELLED")
+                raise TimeoutError("shutdown cancellation was not delivered")
+
+        command = self.make_command(HubCommandOperation.START_INSTANCE)
+        transport = MemoryHubTransport([command])
+        adapter = ShutdownAdapter()
+        client = HubClient(
+            HubClientConfig.local("machine-test", "0.1.0", self.state_path),
+            transport,
+            [adapter],
+            lease_renew_interval_seconds=0.02,
+            lease_retry_interval_seconds=0.01,
+        )
+        self.addCleanup(client.close)
+        failures: list[BaseException] = []
+
+        def run_client() -> None:
+            try:
+                client.run_once()
+            except BaseException as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        worker = threading.Thread(target=run_client)
+        worker.start()
+        self.assertTrue(adapter.started.wait(1))
+        client.request_shutdown()
+        worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [])
+        result = client.store.command(str(command.command_id))
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["result"]["error_code"], "COMMAND_CANCELLED")
+
 
 class OpenClawSubprocessTest(unittest.TestCase):
     def make_service(
@@ -566,7 +609,7 @@ class OpenClawSubprocessTest(unittest.TestCase):
                 if process_group is not None:
                     try:
                         os.killpg(process_group, signal.SIGKILL)
-                    except ProcessLookupError:
+                    except OSError:
                         pass
                 worker.join(1)
 
