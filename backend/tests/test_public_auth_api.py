@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import importlib.util
 import http.cookiejar
+import io
 import json
 import os
 import socket
@@ -1707,6 +1710,95 @@ class PublicAuthApiTest(unittest.TestCase):
         self.assertNotIn("result", completed)
         self.assertNotIn("result", completed["event"])
         self.assertNotIn("private staging log content", json.dumps(completed))
+
+    def test_two_hub_staging_acceptance_completes_against_local_backend(self) -> None:
+        self.start_server("never", use_database=True)
+        repo_root = Path(__file__).resolve().parents[2]
+        script_spec = importlib.util.spec_from_file_location(
+            "accept_machine_hub_staging",
+            repo_root / "scripts" / "accept_machine_hub_staging.py",
+        )
+        self.assertIsNotNone(script_spec)
+        assert script_spec is not None and script_spec.loader is not None
+        staging_acceptance = importlib.util.module_from_spec(script_spec)
+        script_spec.loader.exec_module(staging_acceptance)
+
+        clients: list[HubClient] = []
+        stop_events: list[threading.Event] = []
+        threads: list[threading.Thread] = []
+        hub_errors: list[Exception] = []
+        targets: list[tuple[str, str]] = []
+
+        def run_hub(client: HubClient, stop_event: threading.Event) -> None:
+            while not stop_event.is_set():
+                try:
+                    client.run_once()
+                except Exception as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                stop_event.wait(0.05)
+
+        try:
+            for suffix in ("a", "b"):
+                hub_id = f"hub-staging-e2e-{suffix}"
+                instance_id = f"openclaw-staging-e2e-{suffix}"
+                status, credential, _ = self.request(
+                    f"/api/v1/internal/hubs/{hub_id}/credentials",
+                    method="POST",
+                    payload={},
+                    headers={"Authorization": "Bearer test-admin-token"},
+                )
+                self.assertEqual(status, 200)
+                adapter = SimulatedAdapter()
+                adapter.runtime_type = "openclaw"
+                adapter.instance_id = instance_id
+                client = HubClient(
+                    HubClientConfig.local(
+                        hub_id,
+                        "0.1.0",
+                        Path(self.tmpdir.name) / f"hub-{suffix}.sqlite3",
+                    ),
+                    HttpHubTransport(self.base, hub_id, credential["token"]),
+                    [adapter],
+                )
+                clients.append(client)
+                self.assertEqual(client.run_once().inventory_revision, 1)
+                targets.append((hub_id, instance_id))
+
+            for client in clients:
+                stop_event = threading.Event()
+                thread = threading.Thread(target=run_hub, args=(client, stop_event), daemon=True)
+                stop_events.append(stop_event)
+                threads.append(thread)
+                thread.start()
+
+            output = io.StringIO()
+            args = [
+                "--backend-url",
+                self.base,
+                "--timeout-seconds",
+                "10",
+                "--poll-interval-seconds",
+                "0.05",
+            ]
+            for hub_id, instance_id in targets:
+                args.extend(("--hub", f"{hub_id}={instance_id}"))
+            with patch.dict(os.environ, {"HUB_ADMIN_TOKEN": "test-admin-token"}), contextlib.redirect_stdout(output):
+                exit_code = staging_acceptance.main(args)
+
+            self.assertEqual(exit_code, 0, output.getvalue())
+            self.assertEqual(hub_errors, [])
+            report = json.loads(output.getvalue())
+            self.assertEqual(len(report["checks"]), 2)
+            self.assertTrue(all(check["status"] == "succeeded" for check in report["checks"]))
+            self.assertTrue(all(check["event"]["phase"] == "succeeded" for check in report["checks"]))
+        finally:
+            for stop_event in stop_events:
+                stop_event.set()
+            for thread in threads:
+                thread.join(timeout=5)
+            for client in clients:
+                client.close()
 
 
 if __name__ == "__main__":
