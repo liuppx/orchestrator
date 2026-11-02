@@ -601,6 +601,38 @@ class MachineHubService:
         except SQLAlchemyError as exc:
             raise RuntimeError("Hub command storage is unavailable") from exc
 
+    def command_status_summary(self, hub_id: str, command_id: str) -> dict | None:
+        """Return an admin-safe status view without command payloads or results."""
+        try:
+            with self.sessions() as session:
+                row = session.get(MachineHubCommand, command_id)
+                if row is None or row.hub_id != hub_id:
+                    return None
+                stored_event = row.result_json
+                event = stored_event if isinstance(stored_event, dict) else {}
+                event_summary = {
+                    key: event[key]
+                    for key in (
+                        "sequence",
+                        "occurred_at",
+                        "phase",
+                        "progress_percent",
+                        "observed_state",
+                        "error_code",
+                    )
+                    if key in event
+                }
+                return {
+                    "command_id": row.id,
+                    "status": row.status,
+                    "attempt": row.attempt,
+                    "trace_id": row.trace_id,
+                    "updated_at": _utc(row.updated_at),
+                    "event": event_summary,
+                }
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Hub command storage is unavailable") from exc
+
     def claim_commands(self, hub_id: str, limit: int) -> HubCommandPollResponseV1:
         now = datetime.now(UTC)
         claimed: list[HubCommandV1] = []

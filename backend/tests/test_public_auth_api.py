@@ -1601,6 +1601,113 @@ class PublicAuthApiTest(unittest.TestCase):
             hub = session.get(MachineHub, hub_id)
             self.assertEqual(hub.inventory_json["instances"][0]["observed_state"], "running")
 
+    def test_admin_hub_command_status_excludes_command_results(self) -> None:
+        self.start_server("never", use_database=True)
+        hub_id = "hub-status-test"
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, credential, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        hub_headers = {"Authorization": f"Bearer {credential['token']}"}
+        observed_at = datetime.now(timezone.utc).isoformat()
+        status, _, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/heartbeat",
+            method="POST",
+            payload={
+                "protocol_version": "1.0",
+                "hub_version": "test",
+                "hostname": "staging-test-host",
+                "operating_system": "macOS",
+                "architecture": "arm64",
+                "adapters": [
+                    {
+                        "runtime_type": "openclaw",
+                        "adapter_version": "test",
+                        "capabilities": ["inspect_instance"],
+                    }
+                ],
+            },
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        inventory = {
+            "protocol_version": "1.0",
+            "revision": 1,
+            "captured_at": observed_at,
+            "instances": [
+                {
+                    "instance_id": "openclaw-status",
+                    "runtime_type": "openclaw",
+                    "observed_state": "stopped",
+                    "capabilities": ["inspect_instance"],
+                    "observed_at": observed_at,
+                }
+            ],
+        }
+        status, _, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/inventory",
+            method="PUT",
+            payload=inventory,
+            headers=hub_headers,
+        )
+        self.assertEqual(status, 200)
+        status, receipt, _ = self.request(
+            f"/api/v1/internal/hubs/{hub_id}/commands",
+            method="POST",
+            payload={
+                "target_instance_id": "openclaw-status",
+                "runtime_type": "openclaw",
+                "operation": "inspect_instance",
+                "idempotency_key": "inspect-status-test",
+                "desired_revision": 1,
+                "trace_id": "trace-status-test",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            },
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 202)
+        command_path = f"/api/v1/internal/hubs/{hub_id}/commands/{receipt['command_id']}"
+
+        status, _, _ = self.request(command_path)
+        self.assertEqual(status, 401)
+        status, _, _ = self.request(command_path, headers=hub_headers)
+        self.assertEqual(status, 401)
+
+        status, pending, _ = self.request(command_path, headers=admin_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(pending["attempt"], 0)
+        self.assertEqual(pending["event"], {})
+        self.assertNotIn("result", pending)
+
+        with sessions_for(self.settings.database_url).begin() as session:
+            command = session.get(MachineHubCommand, receipt["command_id"])
+            command.status = "succeeded"
+            command.attempt = 1
+            command.result_json = {
+                "type": "command",
+                "sequence": 4,
+                "occurred_at": observed_at,
+                "phase": "succeeded",
+                "progress_percent": 100,
+                "observed_state": "stopped",
+                "result": {"gateway_log": "private staging log content"},
+            }
+
+        status, completed, _ = self.request(command_path, headers=admin_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["attempt"], 1)
+        self.assertEqual(completed["event"]["phase"], "succeeded")
+        self.assertEqual(completed["event"]["sequence"], 4)
+        self.assertNotIn("result", completed)
+        self.assertNotIn("result", completed["event"])
+        self.assertNotIn("private staging log content", json.dumps(completed))
+
 
 if __name__ == "__main__":
     unittest.main()

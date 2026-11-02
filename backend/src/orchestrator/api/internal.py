@@ -298,6 +298,25 @@ async def internal_issue_hub_command(
         raise map_hub_service_error(exc) from exc
 
 
+@router.get("/hubs/{hub_id}/commands/{command_id}")
+async def internal_get_hub_command_status(
+    hub_id: str,
+    command_id: UUID,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    settings = Settings()
+    require_admin_token(settings, authorization)
+    if not HUB_ID_PATTERN.fullmatch(hub_id):
+        raise HTTPException(status_code=404, detail="Hub not found")
+    try:
+        status = machine_hub_service(settings).command_status_summary(hub_id, str(command_id))
+    except RuntimeError as exc:
+        raise map_hub_service_error(exc) from exc
+    if status is None:
+        raise HTTPException(status_code=404, detail="Hub command not found")
+    return status
+
+
 @router.get("/hubs/{hub_id}/commands", response_model=HubCommandPollResponseV1)
 async def internal_poll_hub_commands(
     hub_id: str,
