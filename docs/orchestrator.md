@@ -18,7 +18,7 @@ Orchestrator 管理 Agent Runtime、运行节点、工作负载和生命周期�
 
 产品方向是中心 Backend + 每台受管机器一个 Hub：Web 工作台只访问 Backend；Hub 主动通过版本化 HTTPS 协议拉取经过授权的类型化命令，并上报本机 Runtime inventory、观测状态和事件。Backend 管身份、期望状态、命令、审计与跨机器视图；Hub 管本机 Runtime Adapter 与执行。Codex CLI、Claude Code CLI、OpenClaw 的能力分别验证，模型供应商单独建模。
 
-服务端已实现首期 Hub 凭证签发/撤销、心跳、inventory、类型化命令和事件 API；OpenClaw 本机 JSON/Secret Store Adapter 支持全套已迁移的 Messenger 实例操作，运行时控制台和旧 API 只经 Hub 命令执行，不会在 Hub 离线时直连 OpenClaw。它还不是生产 Hub 部署：工作台 Hub 管理、用户级 RBAC、守护进程安装/升级、硬取消和远程多机验收尚未交付。当前 Runtime Node 心跳 API 仍是另一套旧接收端。目标、协议约束及迁移验收见[Hub 架构 ADR](hub-architecture-adr.md)。
+服务端已实现首期 Hub 凭证签发/撤销、心跳、inventory、类型化命令和事件 API；OpenClaw 本机 JSON/Secret Store Adapter 支持全套已迁移的 Messenger 实例操作，运行时控制台和旧 API 只经 Hub 命令执行，不会在 Hub 离线时直连 OpenClaw。它还不是生产 Hub 部署：工作台 Hub 管理、用户级 RBAC、守护进程安装/升级和远程多机验收尚未交付；Hub 受控的 OpenClaw 子进程取消与超时清理已实现，但主动脱离进程组的后代和外部副作用仍需 staging 证据。当前 Runtime Node 心跳 API 仍是另一套旧接收端。目标、协议约束及迁移验收见[Hub 架构 ADR](hub-architecture-adr.md)。
 
 ## 启动与运维
 

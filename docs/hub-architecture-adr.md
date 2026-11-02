@@ -53,7 +53,7 @@ Backend 负责“谁可以让哪台机器上的哪个实例做什么”；Hub �
 
 首版采用 Hub 主动发起的 HTTPS 请求和短轮询/长轮询，不要求 Hub 暴露入站端口，不把 WebSocket、gRPC、Kubernetes 或 SSH 作为上线前提。协议使用版本化 JSON API。Pydantic wire contract 位于 `backend/src/orchestrator/protocols/hub_v1.py`，发布的 JSON Schema 位于 `docs/protocols/hub-v1.schema.json`，契约测试位于 `backend/tests/test_hub_protocol_contract.py`。服务端与客户端协议循环已有首期实现；仓库包含内存模拟 Adapter 和真实 OpenClaw 本机 Adapter，支持 create/inspect/start/stop/delete/update-model/logs/diagnose/pair-whatsapp。业务结果使用严格类型化 result union，经本地 outbox、Backend 事件持久化和重放返回；日志结果做脱敏、相对路径化并限制大小，WhatsApp 配对在崩溃恢复时报告 unknown 而不重复启动。
 
-客户端代码位于 `backend/src/orchestrator/hub_client/`：本机 SQLite 保存 inbox、outbox、事件 cursor、Hub heartbeat 和待确认 inventory；命令状态与事件在同一事务提交，网络恢复先补报事件。HTTP transport 对非回环明文 HTTP 拒绝发送凭证。命令恢复时 start/stop 由 Adapter inspect/reconcile，create 先检查本机实例是否已落盘再决定恢复执行。OpenClaw Hub Adapter 使用 Hub 本机 JSON 状态与 Secret Store，不依赖 Backend PostgreSQL；旧数据显式迁移时才临时读取原数据库。Runtime API 与旧 Messenger API 经 Backend 校验 owner 后派发，inventory/事件回填控制面目录。DingTalk secret 仅以目标 Hub 专属 Fernet 密文保存在命令表中，Hub 解密后写本机 Secret Store。`orchestrator-machine-hub --simulate` 仍仅供协议联调；OpenClaw Adapter 也尚无服务安装/升级和强制取消能力。
+客户端代码位于 `backend/src/orchestrator/hub_client/`：本机 SQLite 保存 inbox、outbox、事件 cursor、Hub heartbeat 和待确认 inventory；命令状态与事件在同一事务提交，网络恢复先补报事件。HTTP transport 对非回环明文 HTTP 拒绝发送凭证。命令恢复时 start/stop 由 Adapter inspect/reconcile，create 先检查本机实例是否已落盘再决定恢复执行。OpenClaw Hub Adapter 使用 Hub 本机 JSON 状态与 Secret Store，不依赖 Backend PostgreSQL；旧数据显式迁移时才临时读取原数据库。Runtime API 与旧 Messenger API 经 Backend 校验 owner 后派发，inventory/事件回填控制面目录。DingTalk secret 仅以目标 Hub 专属 Fernet 密文保存在命令表中，Hub 解密后写本机 Secret Store。`orchestrator-machine-hub --simulate` 仍仅供协议联调；守护进程安装/升级和远程多机生产验收仍未完成，受控 OpenClaw 子进程取消与超时清理已由 Adapter 实现并有回归测试。
 
 修改 wire model 后，在 `backend/` 目录执行 `uv run python -m orchestrator.protocols.export_hub_schema` 更新 JSON Schema；契约测试会检查生成文件与 Python 定义一致。
 
@@ -112,7 +112,7 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 | 现状 | 目标变化 |
 |---|---|
 | `RuntimeNode` 保存旧节点机器元数据；另有 Hub 服务端表、协议客户端和 OpenClaw 启停 Adapter | 增加 Hub 安装/升级流程、凭证轮换和远程生产端到端验证 |
-| Runtime API 和旧 `/agent` Messenger API 的 OpenClaw 实例操作已通过 Hub command；结果/事件回写控制面目录 | 增加 Hub 安装/升级流程、凭证治理、强制取消和远程生产验收；把 profile/config 以更细的 typed operations 建模 |
+| Runtime API 和旧 `/agent` Messenger API 的 OpenClaw 实例操作已通过 Hub command；结果/事件回写控制面目录 | 增加 Hub 安装/升级流程、凭证治理、主动脱离进程组的隔离策略和远程生产验收；把 profile/config 以更细的 typed operations 建模 |
 | `runtime_providers.py` 只报告本机 OpenClaw 检测能力 | 转为 Hub 上报的 Adapter 能力目录；Backend 展示每个 Hub 的 Runtime inventory |
 | 生命周期 worker 管理 Node Registry 社区应用发布包，属于另一条执行链路 | 明确与 Runtime Hub 协议的边界；如迁入 Hub，应另定任务类型与安全约束，不把两套协议混为一谈 |
 | Public Runtime API 以当前钱包 owner 和本机实例为中心 | 逐步改为 Backend 管理的 Hub/Instance 资源和授权命令，不允许浏览器直连 Hub |
@@ -121,7 +121,7 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 
 1. 已建立 Runtime/Hub/Instance/命令/事件消息模型、JSON Schema、凭证管理 API、服务端持久化、SQLite inbox/outbox 客户端和 OpenClaw typed Adapter。
 2. Runtime API 和旧 Messenger API 的创建、删除、模型配置、启停、日志、诊断及配对已由 Backend 校验钱包 owner 后下发 Hub 命令；Hub 本地 JSON/Secret Store 和 Backend 控制面目录已分离，Hub 日常运行不依赖 PostgreSQL；同机真实 Backend HTTP 与 Hub 客户端闭环、DingTalk 密文持久化通过测试。
-3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；前端已展示 Hub inventory/观测数据，客户端已加入本地进程锁和凭证文件热加载；下一步完善凭证签发/撤销运维、Hub 安装升级和远程多机验收。
+3. 已迁移旧 Messenger `/agent` CRUD/config/logs/diagnose/pair API 到 Hub；前端已展示 Hub inventory/观测数据，客户端已加入本地进程锁、凭证文件热加载和受控命令取消；下一步完善凭证签发/撤销运维、Hub 安装升级和远程多机验收。
 4. 按真实 CLI 能力接入 Codex 与 Claude Code Adapter，验证 workspace 隔离、审批、日志脱敏、执行取消和离线恢复；逐步开放对应能力。
 5. 补齐多用户 RBAC、Hub 凭证治理、告警、升级/回滚、备份恢复及多机故障演练，再开放多机器生产管理。
 
@@ -136,4 +136,4 @@ Codex CLI、Claude Code CLI 和 OpenClaw 应分别验证真实的本地安装、
 
 ## 验收边界
 
-本 ADR 记录目标架构与协议约束。当前 OpenClaw 本机 Adapter 支持全套已迁移的 Messenger 实例操作，Hub 客户端已具备本地状态库进程锁，但尚无 Hub 守护进程安装/升级、强制取消、工作台 Hub 管理/RBAC、远程机器生产验收或 Codex/Claude Adapter。其余能力只有经过实现、测试和运维验收后，才可更新产品能力声明。
+本 ADR 记录目标架构与协议约束。当前 OpenClaw 本机 Adapter 支持全套已迁移的 Messenger 实例操作，Hub 客户端已具备本地状态库进程锁、CLI 超时和受控取消，但尚无 Hub 守护进程安装/升级、工作台 Hub 管理/RBAC、远程机器生产验收或 Codex/Claude Adapter。其余能力只有经过实现、测试和运维验收后，才可更新产品能力声明。

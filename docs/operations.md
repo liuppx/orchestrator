@@ -43,7 +43,7 @@ bash scripts/starter.sh stop
 
 ## Machine Hub 协议联调
 
-Hub 客户端提供模拟 Adapter 和 OpenClaw typed Adapter，状态库带单进程锁，且每次请求都会从 `0600` 凭证文件读取 token，因此可在保留旧凭证有效期内原子替换文件完成无停机轮换。当前仓库提供本地预检脚本及 systemd user / macOS LaunchAgent 模板；它们覆盖单机安装、启动、重启和日志查看，尚不包含自动升级/回滚、完整进程隔离或远程多机生产验收。先为机器 Hub 签发凭证，将 token 保存到独立 `0600` 文件，并在 Backend 与 Hub 配置 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、可持久化的 `HUB_CLIENT_STATE_DB`；若启用 DingTalk 实例创建，需在 Hub 设置本机 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置同一 key。每台 Hub 应使用独立 key。日常 Hub 运行不需要 `HUB_DATABASE_URL`。Backend 与 Hub 必须指向同一个 `HUB_ID`；非回环地址必须使用 HTTPS。安装 Python 依赖并检查本地配置：
+Hub 客户端提供模拟 Adapter 和 OpenClaw typed Adapter，状态库带单进程锁，且每次请求都会从 `0600` 凭证文件读取 token，因此可在保留旧凭证有效期内原子替换文件完成无停机轮换。当前仓库提供本地预检脚本及 systemd user / macOS LaunchAgent 模板；它们覆盖单机安装、启动、重启和日志查看，尚不包含自动升级/回滚、完整进程隔离或远程多机生产验收。真实 staging 验收步骤见[Machine Hub staging 验收](hub-staging-acceptance.md)。先为机器 Hub 签发凭证，将 token 保存到独立 `0600` 文件，并在 Backend 与 Hub 配置 `HUB_ID`、`HUB_BACKEND_URL`、`HUB_CREDENTIAL_FILE`、可持久化的 `HUB_CLIENT_STATE_DB`；若启用 DingTalk 实例创建，需在 Hub 设置本机 `HUB_COMMAND_ENCRYPTION_KEY`，并在 Backend 的 `HUB_COMMAND_ENCRYPTION_KEYS` JSON map 中为该 Hub ID 配置同一 key。每台 Hub 应使用独立 key。日常 Hub 运行不需要 `HUB_DATABASE_URL`。Backend 与 Hub 必须指向同一个 `HUB_ID`；非回环地址必须使用 HTTPS。安装 Python 依赖并检查本地配置：
 
 ```bash
 cd backend && uv sync --locked
@@ -91,7 +91,7 @@ launchctl bootout gui/$(id -u)/com.yeying.orchestrator.machine-hub
 rm ~/Library/LaunchAgents/com.yeying.orchestrator.machine-hub.plist
 ```
 
-服务收到 SIGTERM/SIGINT 后会停止领取下一轮工作并关闭本机状态库；若信号到达正在执行的 OpenClaw 命令期间，当前底层命令尚不支持硬中断，服务管理器超时强杀仍可能中断操作。部署前需为有副作用的命令保留足够的停止超时，并将不确定状态按 Hub 命令恢复流程处理。
+服务收到 SIGTERM/SIGINT 后会停止领取下一轮工作并请求当前 Adapter 取消，再关闭本机状态库；OpenClaw CLI 子进程组会先收到 SIGTERM，超过 3 秒仍未退出时收到 SIGKILL。部署前仍需为有副作用的命令保留足够的停止超时，并将不确定状态按 Hub 命令恢复流程处理。
 
 OpenClaw Adapter 从 Hub 本机状态文件发现实例，并通过 Hub 执行 `create_instance`、`inspect_instance`、`start_instance`、`stop_instance`、`delete_instance`、`update_instance_model`、`get_instance_logs`、`diagnose_instance` 和 `pair_whatsapp`；restart 和任意命令仍不支持。运行时控制台及旧 Messenger `/agent` API 会由 Backend 校验用户实例所有权后，经 Hub command queue 下发并等待终态回报。DingTalk client secret 在数据库中只保存按目标 Hub key 加密的 Fernet 密文，Hub 解密后写入本地 Secret Store。日志结果在 Hub 侧脱敏、限长并使用相对路径；配对命令恢复不确定时报告 unknown，不会重复启动。Hub 离线或未上报能力时请求失败，不会回退到 Backend 直接操作进程。首次迁移已有实例时，在 Hub 临时配置旧数据源的 `HUB_DATABASE_URL`，执行：
 
