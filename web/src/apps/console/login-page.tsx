@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, CheckCircle2, Fingerprint, LoaderCircle, Wallet } from 'lucide-react'
-import { getProvider, loginWithWalletIdentity } from '@yeying-community/web3-bs'
 
 import { api, ApiError } from '../../platform/core/api'
 import { usePlatformSession } from '../../platform/auth/queries'
-import { shortWallet } from '../../platform/auth/web3'
+import { shortWallet } from '../../platform/auth/format'
 
 type LoginMode = 'wallet' | 'passport'
 type PassportLoginSession = { session_id: string; verify_url: string; poll_interval?: number }
@@ -29,6 +28,19 @@ export function LoginPage() {
   const [passportSession, setPassportSession] = useState<PassportLoginSession | null>(null)
   const [statusText, setStatusText] = useState<string | null>(null)
   const [errorText, setErrorText] = useState<string | null>(null)
+  const [cancellingPassport, setCancellingPassport] = useState(false)
+  const passportPopupRef = useRef<Window | null>(null)
+
+  function closePassportPopup() {
+    if (passportPopupRef.current && !passportPopupRef.current.closed) passportPopupRef.current.close()
+    passportPopupRef.current = null
+  }
+
+  useEffect(() => () => {
+    const popup = passportPopupRef.current
+    if (popup && !popup.closed) popup.close()
+    passportPopupRef.current = null
+  }, [])
 
   useEffect(() => {
     if (session.isAuthenticated) {
@@ -43,17 +55,26 @@ export function LoginPage() {
         const result = await api<PassportLoginStatus>(`/api/v1/public/auth/passport/sessions/${encodeURIComponent(passportSession.session_id)}`)
         if (result.status === 'completed') {
           window.clearInterval(timer)
+          closePassportPopup()
           setPassportSession(null)
           setStatusText('身份已确认，正在进入运行概览...')
           await refetch()
           await navigate({ to: '/overview', replace: true })
-        } else if (result.status === 'failed' || result.status === 'expired') {
+        } else if (result.status === 'failed' || result.status === 'expired' || result.status === 'cancelled') {
           window.clearInterval(timer)
-          setErrorText(result.message || (result.status === 'expired' ? '通行证登录已过期，请重新发起。' : '通行证身份验证失败。'))
-          setStatusText(null)
+          closePassportPopup()
+          setPassportSession(null)
+          if (result.status === 'cancelled') {
+            setStatusText('通行证验证已取消。')
+          } else {
+            setErrorText(result.message || (result.status === 'expired' ? '通行证登录已过期，请重新发起。' : '通行证身份验证失败。'))
+            setStatusText(null)
+          }
         }
       } catch (error) {
         window.clearInterval(timer)
+        closePassportPopup()
+        setPassportSession(null)
         setErrorText(errorMessage(error))
         setStatusText(null)
       }
@@ -67,6 +88,7 @@ export function LoginPage() {
     setPassportSession(null)
     setStatusText('正在连接钱包身份...')
     try {
+      const { getProvider, loginWithWalletIdentity } = await import('@yeying-community/web3-bs')
       const provider = await getProvider({ preferYeYing: true, timeoutMs: 3000 })
       if (!provider) throw new Error('未检测到夜莺钱包或兼容钱包扩展。')
       await loginWithWalletIdentity({ baseUrl: '/api/v1/public/auth', sessionPath: 'identity/login/session?avatar=0', provider, storeToken: false })
@@ -82,7 +104,7 @@ export function LoginPage() {
   }
 
   async function handlePassportLogin() {
-    if (submitting) return
+    if (submitting || cancellingPassport || passportSession) return
     setSubmitting(true)
     setErrorText(null)
     setStatusText('正在创建夜莺通行证登录请求...')
@@ -93,6 +115,7 @@ export function LoginPage() {
       setSubmitting(false)
       return
     }
+    passportPopupRef.current = popup
     try {
       const next = await api<PassportLoginSession>('/api/v1/public/auth/passport/sessions', { method: 'POST' })
       setPassportSession(next)
@@ -100,6 +123,8 @@ export function LoginPage() {
       setStatusText('请在夜莺通行证页面完成验证。')
     } catch (error) {
       popup.close()
+      passportPopupRef.current = null
+      setPassportSession(null)
       setErrorText(errorMessage(error))
       setStatusText(null)
     } finally {
@@ -107,8 +132,40 @@ export function LoginPage() {
     }
   }
 
-  function selectMode(next: LoginMode) {
-    if (next === mode) return
+  async function cancelPassportLogin(): Promise<boolean> {
+    if (!passportSession || cancellingPassport) return !cancellingPassport
+    setCancellingPassport(true)
+    setErrorText(null)
+    try {
+      const result = await api<{ status: string }>(`/api/v1/public/auth/passport/sessions/${encodeURIComponent(passportSession.session_id)}`, { method: 'DELETE' })
+      if (result.status === 'completed') {
+        setStatusText('身份已确认，正在进入运行概览...')
+        await api<PassportLoginStatus>(`/api/v1/public/auth/passport/sessions/${encodeURIComponent(passportSession.session_id)}`)
+        closePassportPopup()
+        setPassportSession(null)
+        await refetch()
+        await navigate({ to: '/overview', replace: true })
+        return false
+      }
+      if (!['cancelled', 'failed', 'expired'].includes(result.status)) {
+        setErrorText('当前验证仍在处理中，请稍后重试。')
+        return false
+      }
+      closePassportPopup()
+      setPassportSession(null)
+      setStatusText(result.status === 'cancelled' ? '通行证验证已取消。' : '当前通行证请求已结束。')
+      return true
+    } catch (error) {
+      setErrorText(`取消通行证验证失败：${errorMessage(error)}`)
+      return false
+    } finally {
+      setCancellingPassport(false)
+    }
+  }
+
+  async function selectMode(next: LoginMode) {
+    if (next === mode || submitting || cancellingPassport) return
+    if (passportSession && !(await cancelPassportLogin())) return
     setMode(next)
     setPassportSession(null)
     setErrorText(null)
@@ -133,10 +190,10 @@ export function LoginPage() {
         <p>通过钱包身份或夜莺通行证安全登录。</p>
         <div className="login-actions">
           <div className="login-mode-switch" role="group" aria-label="选择登录方式">
-            <button type="button" onClick={() => selectMode('wallet')} aria-pressed={mode === 'wallet'} className={mode === 'wallet' ? 'active' : ''}>
+            <button type="button" onClick={() => void selectMode('wallet')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'wallet'} className={mode === 'wallet' ? 'active' : ''}>
               <Wallet className="h-4 w-4" /> 钱包身份
             </button>
-            <button type="button" onClick={() => selectMode('passport')} aria-pressed={mode === 'passport'} className={mode === 'passport' ? 'active' : ''}>
+            <button type="button" onClick={() => void selectMode('passport')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'passport'} className={mode === 'passport' ? 'active' : ''}>
               <Fingerprint className="h-4 w-4" /> 夜莺通行证
             </button>
           </div>
@@ -146,12 +203,13 @@ export function LoginPage() {
               {submitting ? '等待钱包确认' : '连接钱包并继续'}
             </button>
           ) : (
-            <button type="button" onClick={() => void handlePassportLogin()} disabled={submitting || isLoading} className="login-primary">
-              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
-              {passportSession ? '重新发起通行证登录' : '打开夜莺通行证'}
+            <button type="button" onClick={() => void handlePassportLogin()} disabled={submitting || isLoading || cancellingPassport || Boolean(passportSession)} className="login-primary">
+              {submitting || passportSession ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+              {submitting ? '正在创建登录请求' : passportSession ? '等待通行证验证' : '打开夜莺通行证'}
             </button>
           )}
           {mode === 'passport' && passportSession && <a className="login-passport-link" href={passportSession.verify_url} target="_blank" rel="noreferrer">验证页没有打开？在新窗口继续 <ArrowUpRight className="h-4 w-4" /></a>}
+          {mode === 'passport' && passportSession && <button type="button" className="login-cancel" onClick={() => void cancelPassportLogin()} disabled={cancellingPassport}>{cancellingPassport ? '正在取消...' : '取消通行证验证'}</button>}
         </div>
         {statusText && <div className="login-status" role="status"><CheckCircle2 className="h-4 w-4" />{statusText}</div>}
         {errorText && <div className="login-error" role="alert">{errorText}</div>}

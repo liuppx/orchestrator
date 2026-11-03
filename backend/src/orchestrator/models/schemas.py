@@ -51,9 +51,11 @@ class IdentityLoginResult(BaseModel):
     did: str
     walletAddress: str | None = None
     wallet_address: str | None = None
+    username: str | None = None
     expires_at: str
     refresh_expires_at: str | None = None
     auth_type: str = "wallet_identity"
+    auth_method: str | None = None
 
 
 class IdentityLoginResultEnvelope(BaseModel):
@@ -76,7 +78,9 @@ class AuthSessionView(BaseModel):
     wallet_id: str
     chain_id: str | None = None
     auth_type: str = "wallet_plugin"
+    auth_method: str | None = None
     did: str | None = None
+    username: str | None = None
     issued_at: str
     expires_at: str
     ucan_session: dict[str, Any] | list[Any] | str | int | float | bool | None = None

@@ -2,6 +2,8 @@ export type AuthSession = {
   wallet_id: string
   chain_id: string | null
   auth_type?: string
+  auth_method?: string | null
+  username?: string | null
   issued_at: string
   expires_at: string
   ucan_session?: unknown
@@ -18,8 +20,10 @@ export type PlatformSession = {
   isAuthenticated: boolean
   walletId: string | null
   walletShort: string | null
+  username: string | null
   chainId: string | null
   authType: string | null
+  authMethod: string | null
   issuedAt: string | null
   expiresAt: string | null
   capability: SessionCapability

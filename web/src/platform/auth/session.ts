@@ -7,8 +7,10 @@ export function derivePlatformSession(raw: AuthSession | null | undefined): Plat
       isAuthenticated: false,
       walletId: null,
       walletShort: null,
+      username: null,
       chainId: null,
       authType: null,
+      authMethod: null,
       issuedAt: null,
       expiresAt: null,
       capability: {
@@ -27,8 +29,10 @@ export function derivePlatformSession(raw: AuthSession | null | undefined): Plat
     isAuthenticated: true,
     walletId: raw.wallet_id,
     walletShort: shortWallet(raw.wallet_id),
+    username: raw.username?.trim() || null,
     chainId: raw.chain_id ?? null,
     authType: raw.auth_type ?? 'wallet_plugin',
+    authMethod: raw.auth_method ?? null,
     issuedAt: raw.issued_at,
     expiresAt: raw.expires_at,
     capability: {

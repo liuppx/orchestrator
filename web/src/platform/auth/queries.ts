@@ -5,7 +5,7 @@ import type { AuthSession } from '../core/types'
 import { defaultPlatformSession, derivePlatformSession } from './session'
 
 export function useAuthSession() {
-  return useQuery({
+  return useQuery<AuthSession | null>({
     queryKey: ['auth', 'me'],
     queryFn: () => api<AuthSession>('/api/v1/public/auth/me'),
     retry: false,

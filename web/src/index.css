@@ -46,8 +46,33 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .topbar { height: 68px; display: flex; justify-content: space-between; align-items: center; padding: 0 28px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .topbar-title { color: var(--ink); font-size: 13px; font-weight: 600; }
 .topbar-subtitle { margin-top: 1px; color: var(--muted); font-size: 11px; }
-.topbar-account { display: flex; align-items: center; gap: 12px; }
-.topbar-account > button { width: 36px; padding: 0; }
+.topbar-account { position: relative; display: flex; align-items: center; }
+.account-trigger { display: flex; min-width: 0; min-height: 44px; align-items: center; gap: 9px; padding: 4px 8px 4px 5px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.account-trigger:hover, .account-trigger[aria-expanded='true'] { border-color: var(--line); background: #f6f8f6; }
+.account-avatar { width: 32px; height: 32px; display: grid; flex: 0 0 32px; place-items: center; border-radius: 50%; background: #e6f1ea; color: #176b50; font-size: 13px; font-weight: 650; }
+.account-avatar-large { width: 40px; height: 40px; flex-basis: 40px; font-size: 15px; }
+.account-trigger-copy { display: grid; min-width: 0; max-width: 180px; gap: 1px; }
+.account-trigger-copy strong { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.account-trigger-copy span { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.account-chevron { flex: 0 0 auto; color: #758078; transition: transform 120ms ease; }
+.account-trigger[aria-expanded='true'] .account-chevron { transform: rotate(180deg); }
+.account-popover { position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: 330px; max-width: calc(100vw - 24px); padding: 15px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); box-shadow: 0 12px 28px #20252224; }
+.account-popover-heading { display: flex; align-items: center; gap: 11px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.account-popover-name { display: grid; min-width: 0; gap: 3px; }
+.account-popover-name strong { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.account-popover-name span { color: var(--muted); font-size: 11px; }
+.account-detail { display: grid; gap: 5px; padding: 12px 0; }
+.account-detail + .account-detail { border-top: 1px solid #edf0ed; }
+.account-detail > span { color: var(--muted); font-size: 11px; }
+.account-detail > strong { color: var(--ink); font-size: 12px; font-weight: 550; }
+.account-wallet-value { display: grid; gap: 8px; }
+.account-wallet-value code { overflow-wrap: anywhere; color: #435148; font-size: 11px; line-height: 1.5; }
+.account-copy-button { display: inline-flex; width: fit-content; min-height: 34px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #405047; font-size: 11px; cursor: pointer; }
+.account-copy-button:hover { background: #f6f8f6; }
+.account-error { margin: 4px 0 10px; padding: 9px 10px; border: 1px solid #e9c2bd; border-radius: 4px; background: #fff8f7; color: #9d3c33; font-size: 11px; line-height: 1.45; }
+.account-logout { display: flex; width: 100%; min-height: 40px; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #ecd7d4; border-radius: 4px; background: #fff; color: #a33d34; font-size: 12px; font-weight: 550; text-align: left; cursor: pointer; }
+.account-logout:hover { background: #fff8f7; }
+.account-logout:disabled { cursor: wait; opacity: .65; }
 .main-content { max-width: 1480px; margin: 0 auto; padding: 28px; }
 .mobile-nav { display: none; }
 .session-check { display: grid; min-height: 100vh; place-items: center; color: var(--muted); font-size: 14px; }
@@ -166,6 +191,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .login-mode-switch { display: grid; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: #f3f5f2; }
 .login-mode-switch button { display: inline-flex; min-width: 0; min-height: 38px; align-items: center; justify-content: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 3px; background: transparent; color: #59655d; font-size: 12px; cursor: pointer; }
 .login-mode-switch button.active { background: #fff; color: #175f49; box-shadow: 0 1px 3px #2025221f; }
+.login-mode-switch button:disabled { cursor: wait; opacity: .65; }
 .login-primary, .login-secondary { display: inline-flex; min-height: 40px; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; border: 1px solid transparent; border-radius: 5px; font-size: 12px; font-weight: 550; cursor: pointer; }
 .login-primary { background: #167a5a; color: #fff; }
 .login-actions .login-primary { width: 100%; }
@@ -174,6 +200,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .login-passport-link { display: inline-flex; align-items: center; gap: 5px; color: #176b50; font-size: 12px; text-decoration: none; }
 .login-passport-link:hover { text-decoration: underline; }
 .login-primary:disabled { cursor: wait; opacity: .65; }
+.login-actions .login-cancel { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #59655d; font-size: 12px; cursor: pointer; }
+.login-actions .login-cancel:hover { background: #f6f8f6; }
+.login-actions .login-cancel:disabled { cursor: wait; opacity: .65; }
 .login-status, .login-error, .login-session { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; padding: 11px 12px; border-radius: 5px; font-size: 12px; }
 .login-status, .login-session { background: #eff7f2; color: #176b50; }
 .login-error { border: 1px solid #e9c2bd; background: #fff8f7; color: #9d3c33; }
@@ -196,6 +225,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 @media (max-width: 560px) {
+  .account-trigger { gap: 7px; padding-right: 5px; }
+  .account-trigger-copy { max-width: 112px; }
+  .account-popover { right: -4px; }
   .page-heading { align-items: flex-start; }
   .page-heading h1 { font-size: 21px; }
   .page-heading p { max-width: 270px; }
@@ -217,4 +249,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .overview-instance > span:nth-of-type(2) { display: none; }
   .empty-state { flex-wrap: wrap; padding: 17px 14px; }
   .empty-state .text-link { margin-left: 38px; }
+}
+
+@media (max-width: 390px) {
+  .topbar { padding: 0 12px; }
+  .topbar-subtitle { display: none; }
+  .account-trigger-copy { max-width: 92px; }
+  .account-chevron { display: none; }
 }

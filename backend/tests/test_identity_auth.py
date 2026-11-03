@@ -168,6 +168,8 @@ class IdentityAuthServiceTest(unittest.TestCase):
             session, resolved_did = service.verify_wallet_session(created["session_id"], presentation)
             self.assertEqual(resolved_did, did)
             self.assertEqual(session.wallet_id.lower(), wallet.lower())
+            self.assertEqual(session.username, "alice")
+            self.assertEqual(session.auth_method, "wallet_identity")
             with self.assertRaisesRegex(ValueError, "无效或已过期"):
                 service.verify_wallet_session(created["session_id"], presentation)
 
@@ -204,9 +206,86 @@ class IdentityAuthServiceTest(unittest.TestCase):
             self.assertEqual(result["did"], did)
             self.assertEqual(result["walletAddress"], wallet)
             self.assertIsNotNone(session)
+            self.assertEqual(session.username, "alice")
+            self.assertEqual(session.auth_method, "passport")
+            self.assertEqual(result["username"], "alice")
             self.assertEqual(node_post.call_args.args[1], "/api/v1/public/identity/authorize/exchange")
             self.assertEqual(node_post.call_args.args[2]["codeVerifier"], verifier)
             self.assertEqual(node_post.call_args.args[2]["redirectUri"], service.settings.identity_redirect_uri)
+            repeated_result, repeated_session = service.poll_passkey_session(created["session_id"])
+            self.assertEqual(repeated_result["status"], "completed")
+            self.assertEqual(repeated_session.username if repeated_session else None, "alice")
+
+    def test_passkey_session_cancellation_rejects_callback_and_poll(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trust_dir = root / "trust"
+            trust_dir.mkdir()
+            service = self.build_service(root, trust_dir)
+            created_data = {
+                "requestId": "request-cancel",
+                "verifyUrl": "https://node.example/identity/authorize?requestId=request-cancel",
+                "audience": "https://orchestrator.example.test",
+                "nonce": "nonce-cancel",
+                "scopes": IDENTITY_SCOPES,
+                "expiresAt": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+            }
+            with patch("orchestrator.services.identity_auth._node_post", return_value=created_data):
+                created = service.create_passkey_session("https://orchestrator.example.test/callback")
+            with sessions_for(service.settings.database_url).begin() as db:
+                row = db.get(IdentityLoginSession, created["session_id"])
+                state = row.state
+
+            self.assertEqual(service.cancel_passkey_session(created["session_id"]), "cancelled")
+            with self.assertRaisesRegex(ValueError, "无效或已过期"):
+                service.callback(state or "", "late-approval")
+            with patch("orchestrator.services.identity_auth._node_post") as exchange:
+                result, session = service.poll_passkey_session(created["session_id"])
+            self.assertEqual(result["status"], "cancelled")
+            self.assertIsNone(session)
+            exchange.assert_not_called()
+            with sessions_for(service.settings.database_url).begin() as db:
+                row = db.get(IdentityLoginSession, created["session_id"])
+                self.assertEqual(row.status, "cancelled")
+                self.assertIsNone(row.authorization_code)
+                self.assertIsNone(row.code_verifier)
+
+    def test_passkey_cancellation_wins_against_inflight_exchange(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trust_dir = root / "trust"
+            trust_dir.mkdir()
+            _did, _wallet, identity = make_identity(trust_dir)
+            service = self.build_service(root, trust_dir)
+            created_data = {
+                "requestId": "request-race",
+                "verifyUrl": "https://node.example/identity/authorize?requestId=request-race",
+                "audience": "https://orchestrator.example.test",
+                "nonce": "nonce-race",
+                "scopes": IDENTITY_SCOPES,
+                "expiresAt": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+            }
+            with patch("orchestrator.services.identity_auth._node_post", return_value=created_data):
+                created = service.create_passkey_session("https://orchestrator.example.test/callback")
+            with sessions_for(service.settings.database_url).begin() as db:
+                row = db.get(IdentityLoginSession, created["session_id"])
+                state = row.state
+            service.callback(state or "", "single-use-code")
+
+            exchange_data = {**identity["exchange"], "state": state}
+
+            def cancel_during_exchange(*_args, **_kwargs):
+                self.assertEqual(service.cancel_passkey_session(created["session_id"]), "cancelled")
+                return exchange_data
+
+            with patch("orchestrator.services.identity_auth._node_post", side_effect=cancel_during_exchange):
+                result, session = service.poll_passkey_session(created["session_id"])
+            self.assertEqual(result["status"], "cancelled")
+            self.assertIsNone(session)
+            with sessions_for(service.settings.database_url).begin() as db:
+                row = db.get(IdentityLoginSession, created["session_id"])
+                self.assertEqual(row.status, "cancelled")
+                self.assertIsNone(row.username)
 
 
 if __name__ == "__main__":

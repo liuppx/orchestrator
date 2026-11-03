@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from eth_utils import to_checksum_address
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from orchestrator.config import Settings
 from orchestrator.models import AuthSessionView
@@ -168,6 +168,16 @@ def _verify_credentials(credentials: list[str], did: str, required_scopes: list[
     return verified
 
 
+def _verified_username(credentials: dict[str, dict[str, Any]]) -> str:
+    raw_username = (credentials.get("UsernameCredential") or {}).get("username")
+    if not isinstance(raw_username, str):
+        raise ValueError("identity_username_credential_invalid")
+    username = raw_username.strip()
+    if not username or len(username) > 255 or any(ord(char) < 32 or ord(char) == 127 for char in username):
+        raise ValueError("identity_username_credential_invalid")
+    return username
+
+
 def verify_presentation(presentation: dict[str, Any], *, audience: str, nonce: str, scopes: list[str], trust_dir: Path | None) -> tuple[str, str, dict[str, dict[str, Any]]]:
     if presentation.get("version") != 1:
         raise ValueError("IDENTITY_PRESENTATION_INVALID")
@@ -213,8 +223,7 @@ def verify_presentation(presentation: dict[str, Any], *, audience: str, nonce: s
         raise ValueError("identity_wallet_account_invalid") from exc
     if normalized_address.lower() != str(proof_wallet.get("address", "")).lower() or not chain or chain.lower() != str(proof_wallet.get("chainKey", "")).lower():
         raise ValueError("identity_wallet_account_invalid")
-    if not str((credentials.get("UsernameCredential") or {}).get("username", "")).strip():
-        raise ValueError("identity_username_credential_invalid")
+    _verified_username(credentials)
     if not str((credentials.get("EmailCredential") or {}).get("email", "")).strip():
         raise ValueError("identity_email_credential_invalid")
     return did, normalized_address, credentials
@@ -269,20 +278,21 @@ def _verify_exchange_identity(data: dict[str, Any], settings: Settings) -> tuple
     account = verified.get("WalletAccountCredential") or {}
     if str(account.get("address", "")).lower() != normalized_address.lower() or not account.get("chainKey"):
         raise ValueError("夜莺身份账户凭证无效")
-    if not str((verified.get("UsernameCredential") or {}).get("username", "")).strip():
-        raise ValueError("夜莺身份未返回用户名")
+    _verified_username(verified)
     if not str((verified.get("EmailCredential") or {}).get("email", "")).strip():
         raise ValueError("夜莺身份未返回已验证邮箱")
     return did, normalized_address, verified
 
 
-def _session_view(did: str, wallet: str, settings: Settings) -> AuthSessionView:
+def _session_view(did: str, wallet: str, username: str | None, auth_method: str, settings: Settings) -> AuthSessionView:
     now = _now()
     return AuthSessionView(
         wallet_id=wallet,
         chain_id=None,
         auth_type="wallet_identity",
+        auth_method=auth_method,
         did=did,
+        username=username,
         issued_at=now.isoformat(),
         expires_at=(now + timedelta(seconds=settings.session_ttl_seconds)).isoformat(),
         ucan_session=None,
@@ -309,6 +319,7 @@ class IdentityAuthService:
         nonce = secrets.token_urlsafe(32)
         expires_at = _now() + timedelta(seconds=LOGIN_TTL_SECONDS)
         with self._database().begin() as db:
+            db.execute(delete(IdentityLoginSession).where(IdentityLoginSession.expires_at <= _now()))
             db.add(IdentityLoginSession(
                 id=session_id, kind="wallet", audience=audience, nonce=nonce, scopes=scopes,
                 status="pending", expires_at=expires_at, created_at=_now(), updated_at=_now(),
@@ -323,13 +334,14 @@ class IdentityAuthService:
             row.status = "verifying"
             audience, nonce, scopes = row.audience or "", row.nonce or "", row.scopes or []
         try:
-            did, wallet, _credentials = verify_presentation(
+            did, wallet, credentials = verify_presentation(
                 presentation, audience=audience, nonce=nonce, scopes=scopes, trust_dir=self.settings.identity_trust_dir
             )
         except ValueError as exc:
             with self._database().begin() as db:
                 db.execute(update(IdentityLoginSession).where(IdentityLoginSession.id == session_id).values(status="failed", error_message=str(exc), updated_at=_now()))
             raise
+        username = _verified_username(credentials)
         with self._database().begin() as db:
             row = db.get(IdentityLoginSession, session_id)
             if row is None or row.status != "verifying":
@@ -337,8 +349,9 @@ class IdentityAuthService:
             row.status = "completed"
             row.did = did
             row.wallet_address = wallet
+            row.username = username
             row.updated_at = _now()
-        return _session_view(did, wallet, self.settings), did
+        return _session_view(did, wallet, username, "wallet_identity", self.settings), did
 
     def create_passkey_session(self, callback: str) -> dict[str, Any]:
         if not self.settings.identity_node_url or not self.settings.identity_app_id:
@@ -365,6 +378,7 @@ class IdentityAuthService:
             raise ValueError("夜莺身份服务未返回授权请求信息")
         expiry = _parse_time(result.get("expiresAt")) or (_now() + timedelta(seconds=LOGIN_TTL_SECONDS))
         with self._database().begin() as db:
+            db.execute(delete(IdentityLoginSession).where(IdentityLoginSession.expires_at <= _now()))
             db.add(IdentityLoginSession(
                 id=session_id, kind="passkey", request_id=request_id, state=state, code_verifier=verifier,
                 redirect_uri=callback, audience=str(result.get("audience", "")), nonce=str(result.get("nonce", "")), scopes=scopes,
@@ -381,6 +395,25 @@ class IdentityAuthService:
             row.status = "approved"
             row.updated_at = _now()
 
+    def cancel_passkey_session(self, session_id: str) -> str:
+        with self._database().begin() as db:
+            row = db.scalar(select(IdentityLoginSession).where(IdentityLoginSession.id == session_id).with_for_update())
+            if row is None or row.kind != "passkey":
+                raise ValueError("通行证登录会话不存在")
+            if _expires_at(row.expires_at) <= _now():
+                row.status = "expired"
+                row.authorization_code = None
+                row.code_verifier = None
+                row.updated_at = _now()
+                return "expired"
+            if row.status in {"completed", "failed", "cancelled", "expired"}:
+                return row.status
+            row.status = "cancelled"
+            row.authorization_code = None
+            row.code_verifier = None
+            row.updated_at = _now()
+            return row.status
+
     def poll_passkey_session(self, session_id: str) -> tuple[dict[str, Any], AuthSessionView | None]:
         with self._database().begin() as db:
             row = db.scalar(select(IdentityLoginSession).where(IdentityLoginSession.id == session_id).with_for_update())
@@ -390,13 +423,15 @@ class IdentityAuthService:
                 row.status = "expired"
                 return {"status": "expired"}, None
             if row.status == "completed":
-                did, wallet = row.did or "", row.wallet_address or ""
-                view = _session_view(did, wallet, self.settings)
-                return self._login_payload(view, did, wallet), view
+                did, wallet, username = row.did or "", row.wallet_address or "", row.username
+                view = _session_view(did, wallet, username, "passport", self.settings)
+                return {"status": "completed", **self._login_payload(view, did, wallet)}, view
             if row.status == "pending":
                 return {"status": "pending"}, None
             if row.status == "failed":
                 return {"status": "failed", "message": row.error_message or "夜莺身份验证失败"}, None
+            if row.status == "cancelled":
+                return {"status": "cancelled"}, None
             if row.status != "approved" or not row.authorization_code:
                 return {"status": "pending"}, None
             row.status = "exchanging"
@@ -409,20 +444,26 @@ class IdentityAuthService:
             })
             if result.get("state") != state:
                 raise ValueError("夜莺身份授权 state 不匹配")
-            did, wallet, _credentials = _verify_exchange_identity(result, self.settings)
+            did, wallet, credentials = _verify_exchange_identity(result, self.settings)
+            username = _verified_username(credentials)
         except Exception as exc:  # noqa: BLE001
             with self._database().begin() as db:
-                db.execute(update(IdentityLoginSession).where(IdentityLoginSession.id == session_id).values(status="failed", error_message=str(exc)[:1000], authorization_code=None, code_verifier=None, updated_at=_now()))
+                result = db.execute(update(IdentityLoginSession).where(IdentityLoginSession.id == session_id, IdentityLoginSession.status == "exchanging").values(status="failed", error_message=str(exc)[:1000], authorization_code=None, code_verifier=None, updated_at=_now()))
+                if not result.rowcount:
+                    return {"status": "cancelled"}, None
             message = str(exc) if isinstance(exc, ValueError) else "夜莺身份授权失败"
             return {"status": "failed", "message": message}, None
         with self._database().begin() as db:
-            db.execute(update(IdentityLoginSession).where(IdentityLoginSession.id == session_id, IdentityLoginSession.status == "exchanging").values(status="completed", did=did, wallet_address=wallet, authorization_code=None, code_verifier=None, updated_at=_now()))
-        view = _session_view(did, wallet, self.settings)
+            result = db.execute(update(IdentityLoginSession).where(IdentityLoginSession.id == session_id, IdentityLoginSession.status == "exchanging").values(status="completed", did=did, wallet_address=wallet, username=username, authorization_code=None, code_verifier=None, updated_at=_now()))
+            if not result.rowcount:
+                return {"status": "cancelled"}, None
+        view = _session_view(did, wallet, username, "passport", self.settings)
         return {"status": "completed", **self._login_payload(view, did, wallet)}, view
 
     def _login_payload(self, session: AuthSessionView, did: str, wallet: str) -> dict[str, Any]:
         return {"token": self.auth.encode_session(session), "did": did, "walletAddress": wallet, "wallet_address": wallet,
-                "expires_at": session.expires_at, "auth_type": "wallet_identity"}
+                "username": session.username, "expires_at": session.expires_at, "auth_type": "wallet_identity",
+                "auth_method": session.auth_method}
 
 
 def _public_origin(settings: Settings) -> str:

@@ -548,7 +548,8 @@ async def public_auth_identity_login_verify(payload: dict[str, object], request:
     set_identity_session_cookie(response, settings, request, token)
     return {"code": 0, "message": "ok", "data": {
         "token": token, "did": did, "walletAddress": session.wallet_id, "wallet_address": session.wallet_id,
-        "expires_at": session.expires_at, "auth_type": session.auth_type,
+        "username": session.username, "expires_at": session.expires_at, "auth_type": session.auth_type,
+        "auth_method": session.auth_method,
     }}
 
 
@@ -573,6 +574,15 @@ async def public_auth_passport_status(session_id: str, request: Request, respons
         token = auth_service(settings).encode_session(session)
         set_identity_session_cookie(response, settings, request, token)
     return payload
+
+
+@router.delete("/auth/passport/sessions/{session_id}")
+async def public_auth_passport_cancel(session_id: str) -> dict[str, str]:
+    try:
+        status = identity_auth_service(Settings()).cancel_passkey_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": status}
 
 
 @router.get("/auth/passport/callback")

@@ -218,6 +218,7 @@ class IdentityLoginSession(Base):
     authorization_code = mapped_column(String(2048))
     did = mapped_column(String(255))
     wallet_address = mapped_column(String(64))
+    username = mapped_column(String(255))
     error_message = mapped_column(Text)
     expires_at = mapped_column(DateTime(timezone=True), nullable=False)
     created_at = mapped_column(DateTime(timezone=True), nullable=False)

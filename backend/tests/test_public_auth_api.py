@@ -267,7 +267,9 @@ class PublicAuthApiTest(unittest.TestCase):
         session = AuthSessionView(
             wallet_id="0x1111111111111111111111111111111111111111",
             auth_type="wallet_identity",
+            auth_method="wallet_identity",
             did="did:yeying:wid_12345678901234567890123456789012",
+            username="alice",
             issued_at=datetime.now(timezone.utc).isoformat(),
             expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         )
@@ -300,7 +302,29 @@ class PublicAuthApiTest(unittest.TestCase):
             self.assertEqual(verified["code"], 0)
             self.assertEqual(verified["data"]["did"], session.did)
             self.assertEqual(verified["data"]["walletAddress"], session.wallet_id)
-            self.assertTrue(any(key.lower() == "set-cookie" and "hub_session=" in value for key, value in response_headers))
+            self.assertEqual(verified["data"]["username"], "alice")
+            self.assertEqual(verified["data"]["auth_method"], "wallet_identity")
+            cookie_header = next(value for key, value in response_headers if key.lower() == "set-cookie" and "hub_session=" in value)
+            status, current_session, _ = self.request(
+                "/api/v1/public/auth/me",
+                headers={"Cookie": cookie_header.split(";", 1)[0]},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(current_session["username"], "alice")
+            self.assertEqual(current_session["auth_method"], "wallet_identity")
+
+    def test_passport_session_can_be_cancelled(self) -> None:
+        self.start_server("never", use_database=True)
+        with patch("orchestrator.api.public.identity_auth_service") as identity_service:
+            identity_service.return_value.cancel_passkey_session.return_value = "cancelled"
+            status, payload, _ = self.request(
+                "/api/v1/public/auth/passport/sessions/session-test",
+                method="DELETE",
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"status": "cancelled"})
+        identity_service.return_value.cancel_passkey_session.assert_called_once_with("session-test")
+
     def test_secure_cookie_header_when_enabled(self) -> None:
         self.start_server("always")
         account = Account.create()
