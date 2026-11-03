@@ -7,6 +7,7 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Panel } from '../../components/ui/panel'
+import { PageHeader } from '../../components/ui/page-header'
 import { Select } from '../../components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { useAgentAction, useAgentConfigUpdate, useAgentOrderUnlock } from '../../platform/agents/mutations'
@@ -241,21 +242,21 @@ export function TraderStrategyPage() {
     unlockOrder.error?.message
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-md border border-slate-200 bg-white px-6 py-5">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+    <div className="app-page">
+      <PageHeader
+        breadcrumb={
+          <>
           <Link to="/agents">智能体</Link>
           <span>/</span>
           <Link to="/agents/trader">交易员</Link>
           <span>/</span>
-          <span className="text-slate-900">{selectedStrategySnapshot?.name ?? effectiveStrategyId ?? '策略'}</span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-slate-950">{selectedStrategySnapshot?.name ?? '策略详情'}</h1>
-            <p className="mt-1 text-sm text-slate-500">围绕单个策略查看状态、记录和配置。</p>
-          </div>
-          <div className="flex flex-wrap gap-3">
+          <span>{selectedStrategySnapshot?.name ?? effectiveStrategyId ?? '策略'}</span>
+          </>
+        }
+        title={selectedStrategySnapshot?.name ?? '策略详情'}
+        description="查看单个策略的运行状态、交易记录和配置。"
+        actions={
+          <>
             <Button onClick={() => runOnce.mutate()} disabled={runOnce.isPending}>
               <Play className="h-4 w-4" />
               {runOnce.isPending ? '执行中...' : '执行一次'}
@@ -276,9 +277,9 @@ export function TraderStrategyPage() {
               <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
               {isFetching ? '刷新中...' : '刷新'}
             </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <Panel title="当前策略" description="这里不再重复放大一排大卡片，只保留单策略当前最关键的信息。">
         {selectedStrategySnapshot ? (

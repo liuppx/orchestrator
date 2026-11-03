@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 
 import { Badge } from '../../components/ui/badge'
 import { Panel } from '../../components/ui/panel'
+import { PageHeader } from '../../components/ui/page-header'
 import { useAgentWorkspaceSummary } from '../../platform/agents/queries'
 import {
   buildRecordContextFields,
@@ -50,9 +51,10 @@ export function TraderRecordPage() {
   const contextFields = useMemo(() => (record ? buildRecordContextFields(record) : []), [record])
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-md border border-slate-200 bg-white px-6 py-5">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+    <div className="app-page">
+      <PageHeader
+        breadcrumb={
+          <>
           <Link to="/agents">智能体</Link>
           <span>/</span>
           <Link to="/agents/trader">交易员</Link>
@@ -61,13 +63,12 @@ export function TraderRecordPage() {
             {strategyId ?? '策略'}
           </Link>
           <span>/</span>
-          <span className="text-slate-900">记录详情</span>
-        </div>
-        <div className="mt-3">
-          <h1 className="text-2xl font-semibold text-slate-950">记录详情</h1>
-          <p className="mt-1 text-sm text-slate-500">这里单独展示一条记录，不再把详情强行塞进大工作台。</p>
-        </div>
-      </div>
+          <span>记录详情</span>
+          </>
+        }
+        title="记录详情"
+        description={record?.title ?? '查看订单或信号的关键信息与来源上下文。'}
+      />
 
       <Panel title="记录" description="先看关键信息，再看上下文和原始 JSON。">
         {record ? (

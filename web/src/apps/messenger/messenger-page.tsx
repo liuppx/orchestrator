@@ -19,6 +19,7 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Panel } from '../../components/ui/panel'
+import { PageHeader } from '../../components/ui/page-header'
 import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { StatCard } from '../../components/ui/stat-card'
@@ -125,31 +126,29 @@ export function MessengerPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-md border border-slate-200 bg-white px-6 py-5">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <Link to="/agents" className="hover:text-slate-900">
-            智能体
-          </Link>
-          <ChevronRight className="h-4 w-4" />
-            <span className="text-slate-900">消息应用</span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-slate-950">消息应用</h1>
-            <p className="mt-1 text-sm text-slate-500">配置消息通道实例，并检查连接、配对和运行日志。</p>
-          </div>
-          <div className="flex items-center gap-3">
+    <div className="app-page">
+      <PageHeader
+        breadcrumb={
+          <>
+            <Link to="/agents">应用</Link>
+            <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>消息应用</span>
+          </>
+        }
+        title="消息应用"
+        description="配置消息通道实例，并检查连接、配对和运行日志。"
+        actions={
+          <>
             <Badge variant={data?.available ? 'success' : 'muted'}>{data?.available ? '已接入' : '未接入'}</Badge>
-            <Button variant="outline" onClick={() => void refetch()}>
+            <Button variant="outline" onClick={() => void refetch()} disabled={isFetching}>
               <RefreshCw className={isFetching ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
               {isFetching ? '刷新中...' : '刷新'}
             </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="metric-cards">
         {cards.map((card) => {
           return <StatCard key={card.label} icon={card.icon} label={card.label} value={card.value} />
         })}

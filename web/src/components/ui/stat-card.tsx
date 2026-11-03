@@ -12,13 +12,13 @@ export function StatCard({
   hint?: string
 }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-5">
+    <div className="product-stat rounded-md border border-slate-200 bg-white p-5">
       <div className="flex items-center gap-2 text-xs text-slate-500">
         <Icon className="h-4 w-4" />
         {label}
       </div>
-      <div className="mt-3 text-xl font-semibold text-slate-950">{value}</div>
-      {hint ? <div className="mt-1 text-xs text-slate-500">{hint}</div> : null}
+      <div className="product-stat-value mt-3 text-xl font-semibold text-slate-950">{value}</div>
+      {hint ? <div className="product-stat-hint mt-1 text-xs text-slate-500">{hint}</div> : null}
     </div>
   )
 }

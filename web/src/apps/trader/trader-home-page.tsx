@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Panel } from '../../components/ui/panel'
+import { PageHeader } from '../../components/ui/page-header'
 import { useAgentAction } from '../../platform/agents/mutations'
 import { useAgentWorkspaceSummary } from '../../platform/agents/queries'
 import { cn } from '../../platform/core/utils'
@@ -42,15 +43,13 @@ export function TraderHomePage() {
   const actionError = runOnce.error?.message || start.error?.message || stop.error?.message
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-md border border-slate-200 bg-white px-6 py-5">
-        <div className="text-sm text-slate-500">智能体 / 交易员</div>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-slate-950">交易员</h1>
-            <p className="mt-1 text-sm text-slate-500">先看智能体整体状态，再从策略列表进入具体策略。</p>
-          </div>
-          <div className="flex flex-wrap gap-3">
+    <div className="app-page">
+      <PageHeader
+        breadcrumb={<>应用 <span aria-hidden="true">/</span> 交易员</>}
+        title="交易员"
+        description="先看运行状态，再进入具体策略查看记录与配置。"
+        actions={
+          <>
             <Button onClick={() => runOnce.mutate()} disabled={runOnce.isPending}>
               <Play className="h-4 w-4" />
               {runOnce.isPending ? '执行中...' : '执行一次'}
@@ -67,9 +66,9 @@ export function TraderHomePage() {
               <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
               {isFetching ? '刷新中...' : '刷新'}
             </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <Panel title="运行概览" description="用一行紧凑状态看清智能体当前状态，不再使用大卡片平铺。">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">

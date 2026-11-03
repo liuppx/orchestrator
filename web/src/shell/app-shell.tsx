@@ -5,6 +5,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 
 import { logout } from '../platform/auth/mutations'
 import { usePlatformSession } from '../platform/auth/queries'
+import { useRuntimeHubs } from '../platform/agents/queries'
 import { queryClient } from '../platform/query/query-client'
 
 const navItems = [
@@ -44,6 +45,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const navigate = useNavigate()
   const { session, isLoading } = usePlatformSession()
+  const hubsQuery = useRuntimeHubs()
   const [accountOpen, setAccountOpen] = useState(false)
   const [copiedWallet, setCopiedWallet] = useState(false)
   const [accountError, setAccountError] = useState<string | null>(null)
@@ -53,6 +55,23 @@ export function AppShell({ children }: PropsWithChildren) {
 
   const accountName = session.username || session.walletShort || '已登录用户'
   const methodLabel = authMethodLabel(session.authMethod, session.authType)
+  const activePage = navItems.find((item) => isActive(pathname, item.to))?.label ?? '运行控制台'
+  const hubCount = hubsQuery.data?.items.length ?? 0
+  const onlineHubCount = hubsQuery.data?.online ?? 0
+  const hubStatus = hubsQuery.isLoading
+    ? '正在检查机器连接'
+    : hubsQuery.error
+      ? '机器状态暂不可用'
+      : onlineHubCount > 0
+        ? `${onlineHubCount} 台机器在线`
+        : hubCount > 0
+          ? '机器已离线'
+          : '尚未连接机器'
+  const hubStatusTone = hubsQuery.error || (!hubsQuery.isLoading && hubCount > 0 && onlineHubCount === 0)
+    ? 'attention'
+    : onlineHubCount > 0
+      ? 'healthy'
+      : 'quiet'
 
   useEffect(() => {
     if (!isLoading && !session.isAuthenticated) {
@@ -119,10 +138,10 @@ export function AppShell({ children }: PropsWithChildren) {
     <div className="app-frame">
       <aside className="app-sidebar">
         <Link to="/overview" className="brand-lockup" aria-label="Orchestrator 运行概览">
-          <div className="brand-mark">OR</div>
+          <div className="brand-mark" aria-hidden="true">OR</div>
           <div>
             <div className="brand-name">Orchestrator</div>
-            <div className="brand-caption">Runtime Control Plane</div>
+            <div className="brand-caption">运行时编排控制面</div>
           </div>
         </Link>
         <nav className="primary-nav" aria-label="主导航">
@@ -142,16 +161,28 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
           ))}
         </nav>
-        <div className="sidebar-footnote"><span className="node-indicator" />本地执行节点</div>
+        <div className={`sidebar-footnote sidebar-footnote-${hubStatusTone}`} title={hubStatus}>
+          <span className="node-indicator" aria-hidden="true" />
+          <span>{hubStatus}</span>
+        </div>
       </aside>
 
       <main className="app-main">
         <header className="topbar">
-          <div>
-            <div className="topbar-title">运行控制台</div>
-            <div className="topbar-subtitle">管理运行时与应用工作负载</div>
+          <div className="topbar-context">
+            <div className="topbar-title">
+              <span className="topbar-console-label">运行控制台</span>
+              <span className="topbar-divider" aria-hidden="true">/</span>
+              <span className="topbar-current-page">{activePage}</span>
+            </div>
+            <div className="topbar-subtitle">管理机器连接、运行实例与应用工作负载</div>
           </div>
-          <div className="topbar-account" ref={accountRef}>
+          <div className="topbar-right">
+            <div className={`node-status node-status-${hubStatusTone}`} title={hubStatus} aria-label={hubStatus}>
+              <span className="node-indicator" aria-hidden="true" />
+              <span>{hubStatus}</span>
+            </div>
+            <div className="topbar-account" ref={accountRef}>
             <button
               ref={accountTriggerRef}
               type="button"
@@ -173,7 +204,7 @@ export function AppShell({ children }: PropsWithChildren) {
               <ChevronDown className="account-chevron h-4 w-4" aria-hidden="true" />
             </button>
             {accountOpen && (
-              <section className="account-popover" id="account-popover" role="dialog" aria-label="账户信息">
+              <section className="account-popover" id="account-popover" role="dialog" aria-modal="false" aria-label="账户信息">
                 <div className="account-popover-heading">
                   <span className="account-avatar account-avatar-large" aria-hidden="true">{Array.from(accountName)[0] || <UserRound className="h-5 w-5" />}</span>
                   <div className="account-popover-name">
@@ -204,6 +235,7 @@ export function AppShell({ children }: PropsWithChildren) {
                 </button>
               </section>
             )}
+            </div>
           </div>
         </header>
         <nav className="mobile-nav" aria-label="主导航">

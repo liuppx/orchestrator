@@ -4,6 +4,7 @@ import { ArrowRight, Bot, CandlestickChart, MessageSquareMore, RefreshCw } from 
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Panel } from '../../components/ui/panel'
+import { PageHeader } from '../../components/ui/page-header'
 import { StatCard } from '../../components/ui/stat-card'
 import { useAgents } from '../../platform/agents/queries'
 
@@ -24,21 +25,19 @@ export function AgentsPage() {
   const categoryCount = new Set(items.map((item) => item.category)).size
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-md border border-slate-200 bg-white px-6 py-5">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-slate-950">应用工作台</h1>
-            <p className="mt-1 text-sm text-slate-500">查看已接入业务应用的运行结果与领域配置。</p>
-          </div>
-          <Button variant="outline" onClick={() => void refetch()}>
+    <div className="app-page">
+      <PageHeader
+        title="应用工作台"
+        description="查看已接入应用的运行结果与领域配置。"
+        actions={
+          <Button variant="outline" onClick={() => void refetch()} disabled={isFetching}>
             <RefreshCw className={isFetching ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
             {isFetching ? '刷新中...' : '刷新'}
           </Button>
-        </div>
-      </div>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="metric-cards">
         <StatCard icon={Bot} label="业务应用" value={String(items.length)} hint="已注册工作台" />
         <StatCard icon={CandlestickChart} label="目录可用" value={String(availableCount)} hint="应用目录存在" />
         <StatCard

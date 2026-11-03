@@ -59,10 +59,12 @@ export function RuntimePage() {
       <header className="page-heading">
         <div>
           <h1>运行时实例</h1>
+          <p>查看机器连接、实例状态、最近命令和运行日志。</p>
         </div>
         <div className="heading-actions">
           <Button variant="outline" onClick={() => void query.refetch()} aria-label="刷新实例列表">
             <RefreshCw className={query.isFetching ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+            {query.isFetching ? '正在更新' : '刷新列表'}
           </Button>
           <Link to="/agents/messenger" className="primary-action"><Play className="h-4 w-4" />创建实例</Link>
         </div>
@@ -143,6 +145,51 @@ export function RuntimePage() {
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="runtime-mobile-list" role="list" aria-label="运行时实例">
+          {query.isLoading ? <div className="empty-inline">正在读取实例…</div> : null}
+          {!query.isLoading && !query.error && filtered.length === 0 ? (
+            <div className="runtime-mobile-empty">
+              <span>{search || filter !== 'all' ? '没有符合条件的实例。' : '还没有实例。'}</span>
+              {!search && filter === 'all' ? <Link to="/agents/messenger" className="text-link">创建 OpenClaw 实例 <ArrowUpRight className="h-4 w-4" /></Link> : null}
+            </div>
+          ) : null}
+          {filtered.map((instance) => (
+            <article
+              key={instance.id}
+              role="listitem"
+              className={'runtime-mobile-card' + (selected?.id === instance.id ? ' is-selected' : '')}
+            >
+              <div className="runtime-mobile-card-heading">
+                <button
+                  className="runtime-mobile-name"
+                  type="button"
+                  aria-pressed={selected?.id === instance.id}
+                  onClick={() => setSelectedId(instance.id)}
+                >
+                  <strong>{instance.name}</strong>
+                  <small>{instance.id}</small>
+                </button>
+                <Badge variant={instance.observed_state === 'running' ? 'success' : ['error', 'unknown'].includes(instance.observed_state) ? 'danger' : 'muted'}>
+                  {stateLabel(instance.observed_state)}
+                </Badge>
+              </div>
+              <div className="runtime-mobile-meta">
+                <div><span>机器 Hub</span><strong>{instance.hub_id ?? '未分配'}</strong></div>
+                <div><span>运行时</span><strong>{instance.runtime_type} / {instance.workload_type}</strong></div>
+                <div><span>最近命令</span><strong><CommandIcon status={instance.latest_command_status} />{commandStateLabel(instance.latest_command_status)}</strong></div>
+                <div><span>模型</span><strong>{instance.model || '—'}</strong></div>
+              </div>
+              <div className="runtime-mobile-card-footer">
+                <code>{instance.endpoint.replace('http://', '')}</code>
+                {instance.observed_state === 'running' ? (
+                  <Button variant="outline" size="sm" aria-label={'停止 ' + instance.name} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'stop' })}><Square className="h-3.5 w-3.5" />停止</Button>
+                ) : (
+                  <Button variant="outline" size="sm" aria-label={'启动 ' + instance.name} disabled={runtimeAction.isPending || ['starting', 'stopping'].includes(instance.observed_state)} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'start' })}><Play className="h-3.5 w-3.5" />启动</Button>
+                )}
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 

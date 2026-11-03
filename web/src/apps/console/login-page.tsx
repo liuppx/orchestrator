@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowUpRight, CheckCircle2, Fingerprint, LoaderCircle, Wallet } from 'lucide-react'
+import { ArrowUpRight, Blocks, Bot, CheckCircle2, Fingerprint, LoaderCircle, Server, ShieldCheck, Wallet } from 'lucide-react'
 
 import { api, ApiError } from '../../platform/core/api'
 import { usePlatformSession } from '../../platform/auth/queries'
@@ -177,43 +177,65 @@ export function LoginPage() {
       <section className="login-context" aria-label="产品介绍">
         <div className="brand-lockup">
           <div className="brand-mark">OR</div>
-          <div><div className="brand-name">Orchestrator</div><div className="brand-caption">Runtime Control Plane</div></div>
+          <div><div className="brand-name">Orchestrator</div><div className="brand-caption">运行时编排控制面</div></div>
         </div>
         <div className="login-context-title">
-          <h2>管理本机<br />OpenClaw Runtime。</h2>
-          <p>创建和维护 OpenClaw 实例，查看进程状态、运行日志与诊断结果。</p>
+          <h2>让每个运行实例，<br />都清晰可见。</h2>
+          <p>连接机器 Hub，管理 OpenClaw Runtime，并在同一处查看实例状态、日志与应用工作台。</p>
+          <div className="login-pipeline" aria-label="机器节点、运行时、应用工作台">
+            <div className="login-pipeline-step">
+              <span><Server className="h-3.5 w-3.5" />机器 Hub</span>
+              <small>节点连接</small>
+            </div>
+            <span className="login-pipeline-line" aria-hidden="true" />
+            <div className="login-pipeline-step">
+              <span><Bot className="h-3.5 w-3.5" />Runtime</span>
+              <small>实例运行</small>
+            </div>
+            <span className="login-pipeline-line" aria-hidden="true" />
+            <div className="login-pipeline-step">
+              <span><Blocks className="h-3.5 w-3.5" />工作台</span>
+              <small>应用操作</small>
+            </div>
+          </div>
         </div>
         <div className="login-context-foot">当前节点能力以控制台实际检测结果为准。</div>
       </section>
       <section className="login-panel" aria-labelledby="login-title">
-        <h1 id="login-title">登录运行控制台</h1>
-        <p>通过钱包身份或夜莺通行证安全登录。</p>
-        <div className="login-actions">
-          <div className="login-mode-switch" role="group" aria-label="选择登录方式">
-            <button type="button" onClick={() => void selectMode('wallet')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'wallet'} className={mode === 'wallet' ? 'active' : ''}>
-              <Wallet className="h-4 w-4" /> 钱包身份
-            </button>
-            <button type="button" onClick={() => void selectMode('passport')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'passport'} className={mode === 'passport' ? 'active' : ''}>
-              <Fingerprint className="h-4 w-4" /> 夜莺通行证
-            </button>
+        <div className="login-panel-inner">
+          <h1 id="login-title">登录运行控制台</h1>
+          <p>选择钱包身份或夜莺通行证进入你的控制台。</p>
+          <div className="login-actions">
+            <div className="login-mode-switch" role="group" aria-label="选择登录方式">
+              <button type="button" onClick={() => void selectMode('wallet')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'wallet'} className={mode === 'wallet' ? 'active' : ''}>
+                <Wallet className="h-4 w-4" /> 钱包身份
+              </button>
+              <button type="button" onClick={() => void selectMode('passport')} disabled={submitting || cancellingPassport} aria-pressed={mode === 'passport'} className={mode === 'passport' ? 'active' : ''}>
+                <Fingerprint className="h-4 w-4" /> 夜莺通行证
+              </button>
+            </div>
+            {mode === 'wallet' ? (
+              <button type="button" onClick={() => void handleLogin()} disabled={submitting || isLoading} className="login-primary">
+                {submitting || isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+                {submitting ? '等待钱包确认' : '连接钱包并继续'}
+              </button>
+            ) : (
+              <button type="button" onClick={() => void handlePassportLogin()} disabled={submitting || isLoading || cancellingPassport || Boolean(passportSession)} className="login-primary">
+                {submitting || passportSession ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+                {submitting ? '正在创建登录请求' : passportSession ? '等待通行证验证' : '打开夜莺通行证'}
+              </button>
+            )}
+            {mode === 'passport' && passportSession && <a className="login-passport-link" href={passportSession.verify_url} target="_blank" rel="noreferrer">验证页没有打开？在新窗口继续 <ArrowUpRight className="h-4 w-4" /></a>}
+            {mode === 'passport' && passportSession && <button type="button" className="login-cancel" onClick={() => void cancelPassportLogin()} disabled={cancellingPassport}>{cancellingPassport ? '正在取消...' : '取消通行证验证'}</button>}
           </div>
-          {mode === 'wallet' ? (
-            <button type="button" onClick={() => void handleLogin()} disabled={submitting || isLoading} className="login-primary">
-              {submitting || isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-              {submitting ? '等待钱包确认' : '连接钱包并继续'}
-            </button>
-          ) : (
-            <button type="button" onClick={() => void handlePassportLogin()} disabled={submitting || isLoading || cancellingPassport || Boolean(passportSession)} className="login-primary">
-              {submitting || passportSession ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
-              {submitting ? '正在创建登录请求' : passportSession ? '等待通行证验证' : '打开夜莺通行证'}
-            </button>
-          )}
-          {mode === 'passport' && passportSession && <a className="login-passport-link" href={passportSession.verify_url} target="_blank" rel="noreferrer">验证页没有打开？在新窗口继续 <ArrowUpRight className="h-4 w-4" /></a>}
-          {mode === 'passport' && passportSession && <button type="button" className="login-cancel" onClick={() => void cancelPassportLogin()} disabled={cancellingPassport}>{cancellingPassport ? '正在取消...' : '取消通行证验证'}</button>}
+          {statusText && <div className="login-status" role="status"><CheckCircle2 className="h-4 w-4" />{statusText}</div>}
+          {errorText && <div className="login-error" role="alert">{errorText}</div>}
+          {session.walletId && <div className="login-session">当前会话：{shortWallet(session.walletId)}</div>}
+          <div className="login-trust-note">
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            <span>身份验证成功后会显示用户名与登录方式；账户菜单可查看钱包地址和会话有效期。</span>
+          </div>
         </div>
-        {statusText && <div className="login-status" role="status"><CheckCircle2 className="h-4 w-4" />{statusText}</div>}
-        {errorText && <div className="login-error" role="alert">{errorText}</div>}
-        {session.walletId && <div className="login-session">当前会话：{shortWallet(session.walletId)}</div>}
       </section>
     </main>
   )
