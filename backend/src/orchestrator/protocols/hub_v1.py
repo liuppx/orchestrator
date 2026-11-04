@@ -94,6 +94,32 @@ class HubHeartbeatResponseV1(HubProtocolModel):
     command_poll_interval_seconds: int = Field(ge=1, le=300)
 
 
+class DeploymentMode(StrEnum):
+    SERVICE = "service"
+    SCHEDULED = "scheduled"
+
+
+class HubInstanceScheduleV1(HubProtocolModel):
+    """Schedule definition a Hub reports for a `scheduled` instance.
+
+    Structural only: cron semantics are validated at the public API edge, and
+    actual triggering is a Hub-local responsibility (not part of this revision).
+    """
+
+    kind: Literal["cron", "interval"]
+    expr: str | None = Field(default=None, min_length=1, max_length=128)
+    seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "HubInstanceScheduleV1":
+        if self.kind == "cron" and (self.expr is None or self.seconds is not None):
+            raise ValueError("cron schedule requires expr and must not set seconds")
+        if self.kind == "interval" and (self.seconds is None or self.expr is not None):
+            raise ValueError("interval schedule requires seconds and must not set expr")
+        return self
+
+
 class HubRuntimeInstanceV1(HubProtocolModel):
     instance_id: InstanceId
     runtime_type: RuntimeType
@@ -106,6 +132,17 @@ class HubRuntimeInstanceV1(HubProtocolModel):
     observed_state: RuntimeObservedState
     capabilities: list[Capability] = Field(default_factory=list, max_length=64)
     observed_at: AwareDatetime
+    # Additive in 1.0: Hubs that predate deployment modes simply omit these.
+    deployment_mode: DeploymentMode | None = None
+    schedule: HubInstanceScheduleV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule_matches_mode(self) -> "HubRuntimeInstanceV1":
+        if self.deployment_mode == DeploymentMode.SCHEDULED and self.schedule is None:
+            raise ValueError("scheduled instances must report a schedule")
+        if self.deployment_mode == DeploymentMode.SERVICE and self.schedule is not None:
+            raise ValueError("service instances must not report a schedule")
+        return self
 
     @field_validator("capabilities")
     @classmethod

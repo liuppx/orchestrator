@@ -116,10 +116,42 @@ class AgentInstance(Base):
     port = mapped_column(Integer, nullable=True)
     desired_state = mapped_column(String(32), nullable=False, default="stopped")
     observed_state = mapped_column(String(32), nullable=False, default="unknown")
+    # service: long-running process; scheduled: discrete run-once executions driven by `schedule_json`.
+    deployment_mode = mapped_column(String(16), nullable=False, default="service", server_default="service")
+    schedule_json = mapped_column(JSON_VALUE, nullable=True)
     revision = mapped_column(Integer, nullable=False, default=1)
     config_json = mapped_column(JSON_VALUE, nullable=False, default=dict)
     pid = mapped_column(Integer)
     last_error = mapped_column(Text)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ScheduledRun(Base):
+    """One discrete execution of a `scheduled` instance.
+
+    `(instance_id, scheduled_for)` is the idempotency key so a Hub restart cannot
+    trigger the same slot twice. Rows are persisted by the control plane; actual
+    triggering is a Hub-local concern and is not implemented in this stage.
+    """
+
+    __tablename__ = "scheduled_runs"
+    __table_args__ = (
+        UniqueConstraint("instance_id", "scheduled_for", name="uq_scheduled_runs_instance_slot"),
+        Index("ix_scheduled_runs_instance_state", "instance_id", "state"),
+    )
+
+    id = mapped_column(String(36), primary_key=True)
+    instance_id = mapped_column(String(255), ForeignKey("agent_instances.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = mapped_column(String(255), nullable=False, index=True)
+    trigger = mapped_column(String(16), nullable=False, default="schedule")  # schedule | manual
+    scheduled_for = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at = mapped_column(DateTime(timezone=True))
+    finished_at = mapped_column(DateTime(timezone=True))
+    state = mapped_column(String(32), nullable=False, default="queued")  # queued|running|succeeded|failed|cancelled|unknown
+    exit_code = mapped_column(Integer)
+    log_ref = mapped_column(String(1024))
+    command_id = mapped_column(String(36))
     created_at = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at = mapped_column(DateTime(timezone=True), nullable=False)
 

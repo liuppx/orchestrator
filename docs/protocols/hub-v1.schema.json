@@ -1,5 +1,13 @@
 {
   "$defs": {
+    "DeploymentMode": {
+      "enum": [
+        "service",
+        "scheduled"
+      ],
+      "title": "DeploymentMode",
+      "type": "string"
+    },
     "HubCommandEventV1": {
       "additionalProperties": false,
       "properties": {
@@ -812,6 +820,67 @@
       "title": "HubHeartbeatResponseV1",
       "type": "object"
     },
+    "HubInstanceScheduleV1": {
+      "additionalProperties": false,
+      "description": "Schedule definition a Hub reports for a `scheduled` instance.\n\nStructural only: cron semantics are validated at the public API edge, and\nactual triggering is a Hub-local responsibility (not part of this revision).",
+      "properties": {
+        "expr": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expr"
+        },
+        "kind": {
+          "enum": [
+            "cron",
+            "interval"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "seconds": {
+          "anyOf": [
+            {
+              "maximum": 31536000,
+              "minimum": 60,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seconds"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "HubInstanceScheduleV1",
+      "type": "object"
+    },
     "HubInventoryAckV1": {
       "additionalProperties": false,
       "properties": {
@@ -1471,6 +1540,17 @@
           "title": "Capabilities",
           "type": "array"
         },
+        "deployment_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeploymentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "display_name": {
           "anyOf": [
             {
@@ -1558,6 +1638,17 @@
           ],
           "default": null,
           "title": "Runtime Version"
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubInstanceScheduleV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "workload_type": {
           "anyOf": [
