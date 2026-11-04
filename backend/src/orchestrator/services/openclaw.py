@@ -36,6 +36,7 @@ from orchestrator.models import (
     BotInstanceLogsResponse,
     BotInstancePairResponse,
     BotInstanceView,
+    InstanceSchedule,
     RouterModelsResponse,
 )
 
@@ -260,6 +261,8 @@ class OpenClawRuntimeService:
                         "status": row.observed_state,
                         "pid": row.pid,
                         "last_error": row.last_error,
+                        "deployment_mode": row.deployment_mode or "service",
+                        "schedule": row.schedule_json,
                         "created_at": row.created_at.isoformat(),
                         "updated_at": row.updated_at.isoformat(),
                         "dingtalk_client_secret_ref": raw.get("dingtalk_client_secret_ref"),
@@ -361,6 +364,8 @@ class OpenClawRuntimeService:
                         row.port = int(raw.get("port", 0) or 0)
                         row.desired_state = desired_state
                         row.observed_state = str(raw.get("status", "unknown"))
+                        row.deployment_mode = str(raw.get("deployment_mode") or "service")
+                        row.schedule_json = raw.get("schedule")
                         row.revision = revision
                         row.config_json = safe_config
                         row.pid = int(raw["pid"]) if raw.get("pid") is not None else None
@@ -379,6 +384,8 @@ class OpenClawRuntimeService:
                             port=int(raw.get("port", 0) or 0),
                             desired_state=desired_state,
                             observed_state=str(raw.get("status", "unknown")),
+                            deployment_mode=str(raw.get("deployment_mode") or "service"),
+                            schedule_json=raw.get("schedule"),
                             revision=revision,
                             config_json=safe_config,
                             pid=int(raw["pid"]) if raw.get("pid") is not None else None,
@@ -437,6 +444,8 @@ class OpenClawRuntimeService:
                 if raw.get("dingtalk_client_id") is not None
                 else None
             ),
+            deployment_mode="scheduled" if raw.get("deployment_mode") == "scheduled" else "service",
+            schedule=InstanceSchedule.model_validate(raw["schedule"]) if raw.get("schedule") else None,
         )
 
     @staticmethod
@@ -1224,6 +1233,8 @@ class OpenClawRuntimeService:
             "last_error": None,
             "dingtalk_client_id": payload.dingtalk_client_id,
             "dingtalk_client_secret": payload.dingtalk_client_secret,
+            "deployment_mode": payload.deployment_mode,
+            "schedule": payload.schedule.model_dump(mode="json") if payload.schedule else None,
         }
         self.ensure_instance_dirs(raw)
         template = self.normalize_template(kind, payload.template)
@@ -1247,6 +1258,10 @@ class OpenClawRuntimeService:
         if record is None:
             raise KeyError("instance not found")
         db, raw = record
+        if raw.get("deployment_mode") == "scheduled":
+            # Scheduled instances are discrete runs, not a resident gateway. Until the
+            # Hub-local scheduler ships, starting one would silently turn it into a service.
+            raise ValueError("scheduled instances cannot be started: Hub-local scheduling is not implemented yet")
         pid = raw.get("pid")
         if pid is not None and self.is_pid_alive(int(pid)):
             raw["desired_state"] = "running"

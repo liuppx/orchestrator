@@ -947,6 +947,10 @@
     "HubOpenClawCreatePayloadV1": {
       "additionalProperties": false,
       "properties": {
+        "deployment_mode": {
+          "$ref": "#/$defs/DeploymentMode",
+          "default": "service"
+        },
         "dingtalk_client_id": {
           "anyOf": [
             {
@@ -999,6 +1003,17 @@
           "minLength": 1,
           "title": "Name",
           "type": "string"
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubInstanceScheduleV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "template": {
           "anyOf": [

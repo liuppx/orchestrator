@@ -17,6 +17,7 @@ from orchestrator.config import Settings
 from orchestrator.protocols.hub_v1 import (
     HubCommandIssueRequestV1,
     HubCommandOperation,
+    HubInstanceScheduleV1,
     HubOpenClawCreatePayloadV1,
     HubOpenClawDiagnosePayloadV1,
     HubOpenClawLogsPayloadV1,
@@ -134,6 +135,16 @@ async def dispatch_runtime_instance_action(
 ) -> RuntimeInstanceActionResponse:
     if action not in {"start", "stop"}:
         raise HTTPException(status_code=404, detail="runtime action not found")
+    require_hub_catalog(settings)
+    require_owned_instance(service, instance_id, session)
+    current = service.get_instance(instance_id)
+    if current is not None and current.deployment_mode == "scheduled":
+        # Stage A: schedules are stored but never triggered. Refuse here, before any Hub
+        # command exists, so the console gets a precise reason instead of a capability error.
+        raise HTTPException(
+            status_code=409,
+            detail="scheduled instances cannot be started or stopped yet: Hub-local scheduling is not implemented",
+        )
     operation = HubCommandOperation.START_INSTANCE if action == "start" else HubCommandOperation.STOP_INSTANCE
     await dispatch_owned_instance_command(settings, service, instance_id, session, operation)
     result = service.get_instance(instance_id)
@@ -233,6 +244,9 @@ def runtime_instance_view(instance: BotInstanceView) -> RuntimeInstanceView:
     capabilities = ["start", "stop", "logs", "diagnose"]
     if instance.kind == "whatsapp":
         capabilities.append("channel-pairing")
+    if instance.deployment_mode == "scheduled":
+        # Mirrors the Hub inventory: lifecycle actions are not offered until scheduling ships.
+        capabilities = [item for item in capabilities if item not in {"start", "stop"}]
     return RuntimeInstanceView(
         id=instance.id,
         name=instance.name or instance.id,
@@ -248,6 +262,8 @@ def runtime_instance_view(instance: BotInstanceView) -> RuntimeInstanceView:
         created_at=instance.created_at,
         updated_at=instance.updated_at,
         capabilities=capabilities,
+        deployment_mode=instance.deployment_mode,
+        schedule=instance.schedule,
     )
 
 
@@ -366,6 +382,8 @@ async def public_create_runtime_instance(
             template=payload.template,
             dingtalk_client_id=payload.dingtalk_client_id,
             dingtalk_client_secret=payload.dingtalk_client_secret,
+            deployment_mode=payload.deployment_mode,
+            schedule=payload.schedule,
         ),
         session,
     )
@@ -413,6 +431,12 @@ async def create_openclaw_instance_via_hub(
                 template=payload.template,
                 dingtalk_client_id=payload.dingtalk_client_id,
                 dingtalk_client_secret_envelope=encrypted_secret,
+                deployment_mode=payload.deployment_mode,
+                schedule=(
+                    HubInstanceScheduleV1.model_validate(payload.schedule.model_dump(mode="json"))
+                    if payload.schedule
+                    else None
+                ),
             ),
         )
         receipt = hub_service.issue_command(

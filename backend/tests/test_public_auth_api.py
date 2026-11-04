@@ -790,6 +790,98 @@ class PublicAuthApiTest(unittest.TestCase):
         state_text = self.settings.resolved_hub_openclaw_state_file.read_text(encoding="utf-8")
         self.assertNotIn(secret, state_text)
 
+    def test_runtime_console_creates_scheduled_instance_and_refuses_lifecycle_actions(self) -> None:
+        self.start_server("never", use_database=True, hub_id="runtime-schedule-hub")
+        owner = Account.create()
+        owner_headers = self.login(owner)
+        admin_headers = {"Authorization": "Bearer test-admin-token"}
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/runtime-schedule-hub/credentials",
+            method="POST",
+            payload={},
+            headers=admin_headers,
+        )
+        self.assertEqual(status, 200)
+        adapter = OpenClawAdapter.from_settings(self.settings)
+        hub_client = HubClient(
+            HubClientConfig.local("runtime-schedule-hub", "0.1.0", Path(self.tmpdir.name) / "runtime-schedule.sqlite3"),
+            HttpHubTransport(self.base, "runtime-schedule-hub", issued["token"]),
+            [adapter],
+        )
+        self.addCleanup(hub_client.close)
+        hub_client.run_once()
+
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
+        schedule = {"kind": "cron", "expr": "0 9 * * 1-5", "timezone": "Asia/Shanghai"}
+        status, created, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={
+                "runtime_type": "openclaw",
+                "kind": "whatsapp",
+                "name": "Nightly Digest",
+                "deployment_mode": "scheduled",
+                "schedule": schedule,
+            },
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 200, created)
+        assert isinstance(created, dict)
+        self.assertEqual(created["deployment_mode"], "scheduled")
+        self.assertEqual(created["schedule"], {**schedule, "seconds": None})
+        self.assertFalse(created["schedule_executed"])
+        self.assertNotIn("start", created["capabilities"])
+        self.assertNotIn("stop", created["capabilities"])
+        self.assertIn("logs", created["capabilities"])
+
+        # Stage A refuses lifecycle actions on scheduled instances before any Hub command is issued.
+        status, refused, _ = self.request(
+            f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
+            method="POST",
+            payload={},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 409)
+        assert isinstance(refused, dict)
+        self.assertIn("scheduled instances cannot be started", refused["detail"])
+
+        # Let the Hub report inventory at least once more so the catalog mirror path runs.
+        time.sleep(0.3)
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
+
+        with sessions_for(self.settings.database_url)() as db_session:
+            commands = db_session.query(MachineHubCommand).filter_by(hub_id="runtime-schedule-hub").all()
+            self.assertEqual([command.operation for command in commands], ["create_instance"])
+            catalog_instance = db_session.get(AgentInstance, created["id"])
+            self.assertEqual(catalog_instance.deployment_mode, "scheduled")
+            self.assertEqual(catalog_instance.schedule_json, {**schedule, "seconds": None})
+            self.assertNotEqual(catalog_instance.observed_state, "running")
+        local_raw = adapter.service.get_instance_raw(created["id"])[1]
+        self.assertEqual(local_raw["deployment_mode"], "scheduled")
+        self.assertEqual(local_raw["schedule"], {**schedule, "seconds": None})
+        reported = next(item for item in adapter.discover() if item.instance_id == created["id"])
+        self.assertEqual(reported.deployment_mode.value, "scheduled")
+        self.assertNotIn("start_instance", reported.capabilities)
+        with self.assertRaisesRegex(ValueError, "scheduled instances cannot be started"):
+            adapter.service.start_instance(created["id"])
+
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")
 

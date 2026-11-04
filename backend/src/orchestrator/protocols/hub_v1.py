@@ -180,6 +180,8 @@ class HubOpenClawCreatePayloadV1(HubProtocolModel):
     template: str | None = Field(default=None, max_length=128)
     dingtalk_client_id: str | None = Field(default=None, max_length=512)
     dingtalk_client_secret_envelope: str | None = Field(default=None, max_length=4096)
+    deployment_mode: DeploymentMode = DeploymentMode.SERVICE
+    schedule: HubInstanceScheduleV1 | None = None
 
     @model_validator(mode="after")
     def validate_credentials(self) -> HubOpenClawCreatePayloadV1:
@@ -188,6 +190,10 @@ class HubOpenClawCreatePayloadV1(HubProtocolModel):
                 raise ValueError("DingTalk creation requires an encrypted client secret")
         elif self.dingtalk_client_id or self.dingtalk_client_secret_envelope:
             raise ValueError("DingTalk credentials are only valid for the DingTalk workload")
+        if self.deployment_mode == DeploymentMode.SCHEDULED and self.schedule is None:
+            raise ValueError("scheduled instances require a schedule")
+        if self.deployment_mode == DeploymentMode.SERVICE and self.schedule is not None:
+            raise ValueError("service instances must not define a schedule")
         return self
 
 

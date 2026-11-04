@@ -9,8 +9,10 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from orchestrator.config import Settings
 from orchestrator.protocols.hub_v1 import (
+    DeploymentMode,
     HubCommandOperation,
     HubCommandV1,
+    HubInstanceScheduleV1,
     HubOpenClawDeletedResultV1,
     HubOpenClawDiagnosePayloadV1,
     HubOpenClawDiagnoseResultV1,
@@ -155,6 +157,19 @@ class OpenClawAdapter:
             if record is None:
                 continue
             _db, raw = record
+            deployment_mode = DeploymentMode(raw.get("deployment_mode") or "service")
+            capabilities = list(self.instance_capabilities)
+            if view.kind == "whatsapp":
+                capabilities.append(HubCommandOperation.PAIR_WHATSAPP.value)
+            if deployment_mode == DeploymentMode.SCHEDULED:
+                # No Hub-local scheduler yet: do not advertise lifecycle operations the
+                # Backend would otherwise be allowed to issue against a scheduled instance.
+                unsupported = {
+                    HubCommandOperation.START_INSTANCE.value,
+                    HubCommandOperation.STOP_INSTANCE.value,
+                    HubCommandOperation.RESTART_INSTANCE.value,
+                }
+                capabilities = [item for item in capabilities if item not in unsupported]
             instances.append(
                 HubRuntimeInstanceV1(
                     instance_id=view.id,
@@ -165,12 +180,10 @@ class OpenClawAdapter:
                     port=view.port,
                     process_id=view.pid,
                     observed_state=self._observed_state(raw),
-                    capabilities=(
-                        [*self.instance_capabilities, HubCommandOperation.PAIR_WHATSAPP.value]
-                        if view.kind == "whatsapp"
-                        else self.instance_capabilities
-                    ),
+                    capabilities=capabilities,
                     observed_at=datetime.now(UTC),
+                    deployment_mode=deployment_mode,
+                    schedule=HubInstanceScheduleV1.model_validate(raw["schedule"]) if raw.get("schedule") else None,
                 )
             )
         return instances
@@ -389,6 +402,8 @@ class OpenClawAdapter:
                 template=payload.template,
                 dingtalk_client_id=payload.dingtalk_client_id,
                 dingtalk_client_secret=secret,
+                deployment_mode=payload.deployment_mode.value,
+                schedule=payload.schedule.model_dump(mode="json") if payload.schedule else None,
             ),
             owner_wallet="machine-hub",
             instance_id=command.target_instance_id,

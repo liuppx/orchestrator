@@ -18,9 +18,11 @@ from orchestrator.protocols.hub_v1 import (
     DeploymentMode,
     HubInstanceScheduleV1,
     HubInventorySnapshotV1,
+    HubOpenClawCreatePayloadV1,
     HubRuntimeInstanceV1,
     hub_protocol_json_schema,
 )
+from orchestrator.services.openclaw import OpenClawRuntimeService
 from orchestrator.storage import AgentInstance, ScheduledRun
 
 
@@ -205,6 +207,40 @@ class HubProtocolDeploymentModeTest(unittest.TestCase):
         self.assertEqual(schema["$defs"]["DeploymentMode"]["enum"], ["service", "scheduled"])
         self.assertFalse(schema["$defs"]["HubInstanceScheduleV1"]["additionalProperties"])
         self.assertEqual(schema["title"], "Orchestrator Hub Protocol v1.0")
+
+    def test_create_payload_carries_schedule_only_for_scheduled_mode(self) -> None:
+        payload = HubOpenClawCreatePayloadV1(
+            kind="whatsapp",
+            name="Nightly",
+            deployment_mode="scheduled",
+            schedule={"kind": "interval", "seconds": 900},
+        )
+        self.assertEqual(payload.deployment_mode, DeploymentMode.SCHEDULED)
+        self.assertEqual(HubOpenClawCreatePayloadV1(kind="whatsapp", name="Bot").deployment_mode, DeploymentMode.SERVICE)
+        with self.assertRaisesRegex(ValidationError, "scheduled instances require a schedule"):
+            HubOpenClawCreatePayloadV1(kind="whatsapp", name="Nightly", deployment_mode="scheduled")
+        with self.assertRaisesRegex(ValidationError, "service instances must not define a schedule"):
+            HubOpenClawCreatePayloadV1(kind="whatsapp", name="Bot", schedule={"kind": "interval", "seconds": 900})
+
+
+class OpenClawViewFromRawTest(unittest.TestCase):
+    def test_legacy_raw_without_deployment_fields_is_a_service(self) -> None:
+        view = OpenClawRuntimeService._view_from_raw("legacy", {"id": "legacy", "status": "running", "port": 4100})
+        self.assertEqual(view.deployment_mode, "service")
+        self.assertIsNone(view.schedule)
+
+    def test_scheduled_raw_round_trips_its_schedule(self) -> None:
+        raw = {
+            "id": "nightly",
+            "status": "created",
+            "port": 4101,
+            "deployment_mode": "scheduled",
+            "schedule": {"kind": "cron", "expr": "0 2 * * *", "timezone": "UTC"},
+        }
+        view = OpenClawRuntimeService._view_from_raw("nightly", raw)
+        self.assertEqual(view.deployment_mode, "scheduled")
+        self.assertEqual(view.schedule.expr, "0 2 * * *")
+        self.assertEqual(view.schedule.timezone, "UTC")
 
 
 if __name__ == "__main__":

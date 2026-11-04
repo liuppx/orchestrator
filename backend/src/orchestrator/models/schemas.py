@@ -178,6 +178,32 @@ class AgentTypesResponse(BaseModel):
     agentTypes: list[AgentTypeItem]
 
 
+class InstanceSchedule(BaseModel):
+    """Schedule for a `scheduled` instance. Validated at the API edge; the Hub triggers it locally."""
+
+    kind: Literal["cron", "interval"]
+    expr: str | None = Field(default=None, min_length=1, max_length=128)
+    seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_definition(self) -> "InstanceSchedule":
+        if self.kind == "cron":
+            if self.expr is None or self.seconds is not None:
+                raise ValueError("cron schedule requires expr and must not set seconds")
+            if not croniter.is_valid(self.expr):
+                raise ValueError(f"invalid cron expression: {self.expr!r}")
+        else:
+            if self.seconds is None or self.expr is not None:
+                raise ValueError("interval schedule requires seconds and must not set expr")
+        if self.timezone is not None:
+            try:
+                ZoneInfo(self.timezone)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError(f"unknown timezone: {self.timezone!r}") from exc
+        return self
+
+
 class BotInstanceView(BaseModel):
     id: str
     kind: str
@@ -195,6 +221,8 @@ class BotInstanceView(BaseModel):
     logs_dir: str
     last_error: str | None
     dingtalk_client_id: str | None = None
+    deployment_mode: Literal["service", "scheduled"] = "service"
+    schedule: InstanceSchedule | None = None
 
 
 class BotInstanceListResponse(BaseModel):
@@ -222,6 +250,16 @@ class BotInstanceCreateRequest(BaseModel):
     template: str | None = None
     dingtalk_client_id: str | None = None
     dingtalk_client_secret: str | None = None
+    deployment_mode: Literal["service", "scheduled"] = "service"
+    schedule: InstanceSchedule | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule_matches_mode(self) -> "BotInstanceCreateRequest":
+        if self.deployment_mode == "scheduled" and self.schedule is None:
+            raise ValueError("scheduled instances require a schedule")
+        if self.deployment_mode == "service" and self.schedule is not None:
+            raise ValueError("service instances must not define a schedule")
+        return self
 
 
 class RuntimeProviderView(BaseModel):
@@ -235,32 +273,6 @@ class RuntimeProviderView(BaseModel):
 
 class RuntimeProviderListResponse(BaseModel):
     items: list[RuntimeProviderView]
-
-
-class InstanceSchedule(BaseModel):
-    """Schedule for a `scheduled` instance. Validated at the API edge; the Hub triggers it locally."""
-
-    kind: Literal["cron", "interval"]
-    expr: str | None = Field(default=None, min_length=1, max_length=128)
-    seconds: int | None = Field(default=None, ge=60, le=31_536_000)
-    timezone: str | None = Field(default=None, min_length=1, max_length=64)
-
-    @model_validator(mode="after")
-    def validate_definition(self) -> "InstanceSchedule":
-        if self.kind == "cron":
-            if self.expr is None or self.seconds is not None:
-                raise ValueError("cron schedule requires expr and must not set seconds")
-            if not croniter.is_valid(self.expr):
-                raise ValueError(f"invalid cron expression: {self.expr!r}")
-        else:
-            if self.seconds is None or self.expr is not None:
-                raise ValueError("interval schedule requires seconds and must not set expr")
-        if self.timezone is not None:
-            try:
-                ZoneInfo(self.timezone)
-            except (ZoneInfoNotFoundError, ValueError) as exc:
-                raise ValueError(f"unknown timezone: {self.timezone!r}") from exc
-        return self
 
 
 class RuntimeInstanceView(BaseModel):
@@ -321,16 +333,6 @@ class RuntimeInstanceActionResponse(BaseModel):
 
 class RuntimeInstanceCreateRequest(BotInstanceCreateRequest):
     runtime_type: str = "openclaw"
-    deployment_mode: Literal["service", "scheduled"] = "service"
-    schedule: InstanceSchedule | None = None
-
-    @model_validator(mode="after")
-    def validate_schedule_matches_mode(self) -> "RuntimeInstanceCreateRequest":
-        if self.deployment_mode == "scheduled" and self.schedule is None:
-            raise ValueError("scheduled instances require a schedule")
-        if self.deployment_mode == "service" and self.schedule is not None:
-            raise ValueError("service instances must not define a schedule")
-        return self
 
 
 class ScheduledRunView(BaseModel):

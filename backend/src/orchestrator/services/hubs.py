@@ -276,6 +276,11 @@ class MachineHubService:
                         catalog_instance.port = instance.port
                     catalog_instance.pid = instance.process_id
                     catalog_instance.observed_state = instance.observed_state.value
+                    if instance.deployment_mode is not None:
+                        catalog_instance.deployment_mode = instance.deployment_mode.value
+                        catalog_instance.schedule_json = (
+                            instance.schedule.model_dump(mode="json") if instance.schedule else None
+                        )
                     if instance.model:
                         config = dict(catalog_instance.config_json or {})
                         config["model"] = instance.model
@@ -377,6 +382,10 @@ class MachineHubService:
                             port=None,
                             desired_state="stopped",
                             observed_state="unknown",
+                            deployment_mode=create_payload.deployment_mode.value,
+                            schedule_json=(
+                                create_payload.schedule.model_dump(mode="json") if create_payload.schedule else None
+                            ),
                             revision=request.desired_revision,
                             config_json={"model": create_payload.model, "template": create_payload.template},
                             created_at=now,
