@@ -1259,9 +1259,17 @@ class OpenClawRuntimeService:
             raise KeyError("instance not found")
         db, raw = record
         if raw.get("deployment_mode") == "scheduled":
-            # Scheduled instances are discrete runs, not a resident gateway. Until the
-            # Hub-local scheduler ships, starting one would silently turn it into a service.
-            raise ValueError("scheduled instances cannot be started: Hub-local scheduling is not implemented yet")
+            # Scheduled instances have no resident gateway: "start" enables the schedule
+            # on this Hub and launches nothing. The observed state is unchanged by design.
+            raw["desired_state"] = "running"
+            raw["last_error"] = None
+            raw["updated_at"] = now_rfc3339()
+            self.persist_db(db)
+            self.write_instance_event(raw, "schedule_enabled", {"schedule": raw.get("schedule")})
+            return BotInstanceActionResponse(
+                message="schedule enabled",
+                instance=self._view_from_raw(instance_id, raw),
+            )
         pid = raw.get("pid")
         if pid is not None and self.is_pid_alive(int(pid)):
             raw["desired_state"] = "running"
@@ -1305,6 +1313,17 @@ class OpenClawRuntimeService:
         if record is None:
             raise KeyError("instance not found")
         db, raw = record
+        if raw.get("deployment_mode") == "scheduled":
+            # Disabling a schedule stops future triggers; a run already in flight is bounded
+            # by its own timeout and is never killed here.
+            raw["desired_state"] = "stopped"
+            raw["updated_at"] = now_rfc3339()
+            self.persist_db(db)
+            self.write_instance_event(raw, "schedule_disabled", {})
+            return BotInstanceActionResponse(
+                message="schedule disabled",
+                instance=self._view_from_raw(instance_id, raw),
+            )
         raw["desired_state"] = "stopped"
         raw["status"] = "stopping"
         raw["updated_at"] = now_rfc3339()

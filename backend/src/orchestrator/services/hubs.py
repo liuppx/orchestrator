@@ -24,6 +24,7 @@ from orchestrator.protocols.hub_v1 import (
     HubHeartbeatResponseV1,
     HubInventoryAckV1,
     HubInventorySnapshotV1,
+    HubScheduledRunEventV1,
     expected_result_kind,
 )
 from orchestrator.storage import (
@@ -35,6 +36,7 @@ from orchestrator.storage import (
     MachineHubCredential,
     MachineHubEvent,
     RuntimeNode,
+    ScheduledRun,
     sessions_for,
 )
 
@@ -60,6 +62,8 @@ COMMAND_LEASE_SECONDS = 60
 MAX_COMMAND_TTL = timedelta(hours=24)
 TERMINAL_COMMAND_PHASES = {"succeeded", "failed", "rejected", "unknown", "expired", "superseded"}
 STATEFUL_COMMAND_OPERATIONS = {"start_instance", "stop_instance", "restart_instance"}
+# Run phases are monotonic; a late or replayed earlier phase must never regress a terminal run.
+RUN_STATE_ORDER = {"queued": 0, "running": 1, "succeeded": 2, "failed": 2, "cancelled": 2, "unknown": 2}
 
 
 def _utc(value: datetime) -> datetime:
@@ -530,6 +534,12 @@ class MachineHubService:
                     .order_by(MachineHubCommand.created_at.desc())
                     .limit(1)
                 )
+                latest_run = session.scalar(
+                    select(ScheduledRun)
+                    .where(ScheduledRun.instance_id == instance_id)
+                    .order_by(ScheduledRun.scheduled_for.desc())
+                    .limit(1)
+                )
                 return {
                     "hub_id": instance.node_id,
                     "hub_status": hub.status if hub is not None else "unknown",
@@ -537,6 +547,9 @@ class MachineHubService:
                     "latest_command_status": latest.status if latest is not None else None,
                     "latest_command_operation": latest.operation if latest is not None else None,
                     "latest_command_updated_at": _utc(latest.updated_at).isoformat() if latest is not None else None,
+                    "schedule_executed": latest_run is not None,
+                    "latest_run_state": latest_run.state if latest_run is not None else None,
+                    "latest_run_at": _utc(latest_run.scheduled_for).isoformat() if latest_run is not None else None,
                 }
         except SQLAlchemyError as exc:
             raise RuntimeError("instance catalog storage is unavailable") from exc
@@ -706,11 +719,8 @@ class MachineHubService:
                             ),
                             operation_payload=(
                                 row.payload_json
-                                if row.operation in {
-                                    HubCommandOperation.UPDATE_INSTANCE_MODEL.value,
-                                    HubCommandOperation.GET_INSTANCE_LOGS.value,
-                                    HubCommandOperation.DIAGNOSE_INSTANCE.value,
-                                }
+                                if row.operation != HubCommandOperation.CREATE_INSTANCE.value
+                                and row.payload_json is not None
                                 else None
                             ),
                         )
@@ -889,6 +899,8 @@ class MachineHubService:
                                             catalog_instance.updated_at = now
                             else:
                                 command.lease_expires_at = now + timedelta(seconds=COMMAND_LEASE_SECONDS)
+                    elif isinstance(event, HubScheduledRunEventV1):
+                        self._upsert_scheduled_run(session, hub_id, event, now)
                 hub.status = "online"
                 hub.last_seen_at = now
                 hub.updated_at = now
@@ -899,3 +911,78 @@ class MachineHubService:
         except SQLAlchemyError as exc:
             raise RuntimeError("Hub event storage is unavailable") from exc
         return HubEventBatchAckV1(protocol_version="1.0", accepted_through_sequence=cursor, accepted_at=now)
+
+    @staticmethod
+    def _upsert_scheduled_run(session, hub_id: str, event: HubScheduledRunEventV1, now: datetime) -> None:
+        """Mirror a Hub-reported run into the catalog; Hub-local triggers never come through a command."""
+        catalog_instance = session.get(AgentInstance, event.instance_id, with_for_update=True)
+        if (
+            catalog_instance is None
+            or catalog_instance.node_id != hub_id
+            or catalog_instance.runtime_type != event.runtime_type
+        ):
+            # Not in this catalog: the raw event is already persisted above; nothing to attribute.
+            return
+        scheduled_for = _utc(event.scheduled_for)
+        run = session.get(ScheduledRun, str(event.run_id), with_for_update=True)
+        if run is None:
+            run = session.scalar(
+                select(ScheduledRun)
+                .where(ScheduledRun.instance_id == event.instance_id, ScheduledRun.scheduled_for == scheduled_for)
+                .with_for_update()
+            )
+        if run is None:
+            run = ScheduledRun(
+                id=str(event.run_id),
+                instance_id=event.instance_id,
+                owner_id=catalog_instance.owner_id,
+                trigger=event.trigger,
+                scheduled_for=scheduled_for,
+                state=event.state,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(run)
+        elif RUN_STATE_ORDER.get(event.state, 0) < RUN_STATE_ORDER.get(run.state, 0):
+            return
+        run.state = event.state
+        if event.command_id is not None:
+            run.command_id = str(event.command_id)
+        if event.started_at is not None:
+            run.started_at = _utc(event.started_at)
+        if event.finished_at is not None:
+            run.finished_at = _utc(event.finished_at)
+        if event.exit_code is not None:
+            run.exit_code = event.exit_code
+        if event.log_ref is not None:
+            run.log_ref = event.log_ref
+        run.updated_at = now
+        catalog_instance.updated_at = now
+
+    @staticmethod
+    def _run_view(run: ScheduledRun) -> dict[str, object]:
+        return {
+            "id": run.id,
+            "instance_id": run.instance_id,
+            "trigger": run.trigger,
+            "scheduled_for": _utc(run.scheduled_for).isoformat(),
+            "started_at": _utc(run.started_at).isoformat() if run.started_at else None,
+            "finished_at": _utc(run.finished_at).isoformat() if run.finished_at else None,
+            "state": run.state,
+            "exit_code": run.exit_code,
+            "log_ref": run.log_ref,
+            "command_id": run.command_id,
+        }
+
+    def list_scheduled_runs(self, instance_id: str, limit: int = 50) -> list[dict[str, object]]:
+        try:
+            with self.sessions() as session:
+                rows = session.scalars(
+                    select(ScheduledRun)
+                    .where(ScheduledRun.instance_id == instance_id)
+                    .order_by(ScheduledRun.scheduled_for.desc())
+                    .limit(limit)
+                ).all()
+                return [self._run_view(run) for run in rows]
+        except SQLAlchemyError as exc:
+            raise RuntimeError("scheduled run storage is unavailable") from exc

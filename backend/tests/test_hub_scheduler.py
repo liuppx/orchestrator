@@ -281,7 +281,8 @@ class OpenClawRunOnceTest(unittest.TestCase):
             self.assertEqual(reported.deployment_mode.value, "scheduled")
             self.assertIn("run_instance_once", reported.capabilities)
             self.assertIn("cancel_run", reported.capabilities)
-            self.assertNotIn("start_instance", reported.capabilities)
+            self.assertIn("start_instance", reported.capabilities)
+            self.assertNotIn("restart_instance", reported.capabilities)
 
             run_id = uuid4()
             payload = HubRunOncePayloadV1(kind="run_once", run_id=run_id, trigger="manual", scheduled_for=datetime.now(UTC))
@@ -298,9 +299,15 @@ class OpenClawRunOnceTest(unittest.TestCase):
             self.assertEqual(adapter.discover()[0].observed_state.value, "completed")
 
             db, raw = adapter.service.get_instance_raw(created.id)
-            raw["desired_state"] = "running"
-            adapter.service.persist_db(db)
+            self.assertEqual(raw["desired_state"], "stopped")
+            enabled = adapter.service.start_instance(created.id)
+            self.assertEqual(enabled.message, "schedule enabled")
             self.assertTrue(adapter.schedule_enabled(created.id))
+            # Enabling launches nothing: the instance is still not a running gateway.
+            self.assertNotEqual(adapter.discover()[0].observed_state.value, "running")
+            disabled = adapter.service.stop_instance(created.id)
+            self.assertEqual(disabled.message, "schedule disabled")
+            self.assertFalse(adapter.schedule_enabled(created.id))
 
             cancelled = adapter.execute(
                 self.make_command(created.id, HubCancelRunPayloadV1(kind="cancel_run", run_id=run_id)),

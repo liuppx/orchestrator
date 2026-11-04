@@ -792,7 +792,7 @@ class PublicAuthApiTest(unittest.TestCase):
         state_text = self.settings.resolved_hub_openclaw_state_file.read_text(encoding="utf-8")
         self.assertNotIn(secret, state_text)
 
-    def test_runtime_console_creates_scheduled_instance_and_refuses_lifecycle_actions(self) -> None:
+    def test_runtime_console_schedules_runs_through_hub(self) -> None:
         self.start_server("never", use_database=True, hub_id="runtime-schedule-hub")
         owner = Account.create()
         owner_headers = self.login(owner)
@@ -804,11 +804,21 @@ class PublicAuthApiTest(unittest.TestCase):
             headers=admin_headers,
         )
         self.assertEqual(status, 200)
+
+        class FakeClock:
+            def __init__(self) -> None:
+                self.now = datetime.now(timezone.utc)
+
+            def __call__(self) -> datetime:
+                return self.now
+
+        clock = FakeClock()
         adapter = OpenClawAdapter.from_settings(self.settings)
         hub_client = HubClient(
             HubClientConfig.local("runtime-schedule-hub", "0.1.0", Path(self.tmpdir.name) / "runtime-schedule.sqlite3"),
             HttpHubTransport(self.base, "runtime-schedule-hub", issued["token"]),
             [adapter],
+            clock=clock,
         )
         self.addCleanup(hub_client.close)
         hub_client.run_once()
@@ -828,7 +838,7 @@ class PublicAuthApiTest(unittest.TestCase):
 
         hub_thread = threading.Thread(target=run_hub, daemon=True)
         hub_thread.start()
-        schedule = {"kind": "cron", "expr": "0 9 * * 1-5", "timezone": "Asia/Shanghai"}
+        schedule = {"kind": "interval", "seconds": 60}
         status, created, _ = self.request(
             "/api/v1/public/runtime/instances",
             method="POST",
@@ -843,46 +853,103 @@ class PublicAuthApiTest(unittest.TestCase):
         )
         self.assertEqual(status, 200, created)
         assert isinstance(created, dict)
+        instance_id = created["id"]
         self.assertEqual(created["deployment_mode"], "scheduled")
-        self.assertEqual(created["schedule"], {**schedule, "seconds": None})
+        self.assertEqual(created["schedule"], {**schedule, "expr": None, "timezone": None})
         self.assertFalse(created["schedule_executed"])
-        self.assertNotIn("start", created["capabilities"])
-        self.assertNotIn("stop", created["capabilities"])
-        self.assertIn("logs", created["capabilities"])
+        self.assertEqual(created["desired_state"], "stopped")
+        for capability in ("start", "stop", "run-once", "logs"):
+            self.assertIn(capability, created["capabilities"])
 
-        # Stage A refuses lifecycle actions on scheduled instances before any Hub command is issued.
-        status, refused, _ = self.request(
-            f"/api/v1/public/runtime/instances/{created['id']}/actions/start",
+        # A fresh schedule is disabled: nothing fires until the owner enables it.
+        clock.now += timedelta(seconds=120)
+        time.sleep(0.3)
+        status, runs, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/runs", headers=owner_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(runs["total"], 0)
+
+        # "start" enables the schedule; nothing is launched.
+        status, enabled, _ = self.request(
+            f"/api/v1/public/runtime/instances/{instance_id}/actions/start", method="POST", payload={}, headers=owner_headers
+        )
+        self.assertEqual(status, 200, enabled)
+        self.assertEqual(enabled["message"], "schedule enabled")
+        self.assertEqual(enabled["instance"]["desired_state"], "running")
+        self.assertNotEqual(enabled["instance"]["observed_state"], "running")
+        self.assertTrue(adapter.schedule_enabled(instance_id))
+
+        # On-demand run: a Backend command, tracked as a manual run.
+        status, ran, _ = self.request(
+            f"/api/v1/public/runtime/instances/{instance_id}/actions/run", method="POST", payload={}, headers=owner_headers
+        )
+        self.assertEqual(status, 200, ran)
+        self.assertEqual(ran["message"], "run completed by Machine Hub")
+        self.assertTrue(ran["run_id"])
+        self.assertTrue(ran["instance"]["schedule_executed"])
+        self.assertEqual(ran["instance"]["latest_run_state"], "succeeded")
+        status, runs, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/runs", headers=owner_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(runs["total"], 1)
+        manual = runs["items"][0]
+        self.assertEqual((manual["id"], manual["trigger"], manual["state"], manual["exit_code"]), (ran["run_id"], "manual", "succeeded", 0))
+        self.assertTrue(manual["log_ref"].startswith("logs/runs/"))
+        self.assertIsNotNone(manual["command_id"])
+        self.assertIsNotNone(manual["finished_at"])
+
+        # Hub-local trigger: advance the Hub's clock past the next slot and wait for the report.
+        clock.now += timedelta(seconds=61)
+        deadline = time.monotonic() + 5
+        scheduled_runs: list[dict] = []
+        while time.monotonic() < deadline and not scheduled_runs:
+            status, runs, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/runs", headers=owner_headers)
+            scheduled_runs = [item for item in runs["items"] if item["trigger"] == "schedule"]
+            time.sleep(0.1)
+        self.assertEqual(len(scheduled_runs), 1, runs)
+        self.assertEqual(scheduled_runs[0]["state"], "succeeded")
+        self.assertIsNone(scheduled_runs[0]["command_id"])
+        self.assertEqual(runs["total"], 2)
+
+        status, disabled, _ = self.request(
+            f"/api/v1/public/runtime/instances/{instance_id}/actions/stop", method="POST", payload={}, headers=owner_headers
+        )
+        self.assertEqual(status, 200, disabled)
+        self.assertEqual(disabled["message"], "schedule disabled")
+        self.assertFalse(adapter.schedule_enabled(instance_id))
+
+        # A service instance cannot be run on demand.
+        status, other, _ = self.request(
+            "/api/v1/public/runtime/instances",
             method="POST",
-            payload={},
+            payload={"runtime_type": "openclaw", "kind": "whatsapp", "name": "Resident"},
             headers=owner_headers,
         )
+        self.assertEqual(status, 200, other)
+        status, refused, _ = self.request(
+            f"/api/v1/public/runtime/instances/{other['id']}/actions/run", method="POST", payload={}, headers=owner_headers
+        )
         self.assertEqual(status, 409)
-        assert isinstance(refused, dict)
-        self.assertIn("scheduled instances cannot be started", refused["detail"])
 
-        # Let the Hub report inventory at least once more so the catalog mirror path runs.
-        time.sleep(0.3)
         keep_running.clear()
         hub_thread.join(timeout=2)
         self.assertFalse(hub_thread.is_alive())
         self.assertEqual(hub_errors, [])
 
         with sessions_for(self.settings.database_url)() as db_session:
-            commands = db_session.query(MachineHubCommand).filter_by(hub_id="runtime-schedule-hub").all()
-            self.assertEqual([command.operation for command in commands], ["create_instance"])
-            catalog_instance = db_session.get(AgentInstance, created["id"])
+            commands = (
+                db_session.query(MachineHubCommand)
+                .filter_by(hub_id="runtime-schedule-hub", target_instance_id=instance_id)
+                .order_by(MachineHubCommand.created_at.asc())
+                .all()
+            )
+            self.assertEqual([command.operation for command in commands], ["create_instance", "start_instance", "run_instance_once", "stop_instance"])
+            self.assertTrue(all(command.status == "succeeded" for command in commands))
+            catalog_instance = db_session.get(AgentInstance, instance_id)
             self.assertEqual(catalog_instance.deployment_mode, "scheduled")
-            self.assertEqual(catalog_instance.schedule_json, {**schedule, "seconds": None})
+            self.assertEqual(catalog_instance.desired_state, "stopped")
             self.assertNotEqual(catalog_instance.observed_state, "running")
-        local_raw = adapter.service.get_instance_raw(created["id"])[1]
+        local_raw = adapter.service.get_instance_raw(instance_id)[1]
         self.assertEqual(local_raw["deployment_mode"], "scheduled")
-        self.assertEqual(local_raw["schedule"], {**schedule, "seconds": None})
-        reported = next(item for item in adapter.discover() if item.instance_id == created["id"])
-        self.assertEqual(reported.deployment_mode.value, "scheduled")
-        self.assertNotIn("start_instance", reported.capabilities)
-        with self.assertRaisesRegex(ValueError, "scheduled instances cannot be started"):
-            adapter.service.start_instance(created["id"])
+        self.assertEqual(local_raw["status"], "completed")
 
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")

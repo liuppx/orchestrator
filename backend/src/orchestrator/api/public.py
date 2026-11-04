@@ -22,6 +22,7 @@ from orchestrator.protocols.hub_v1 import (
     HubOpenClawDiagnosePayloadV1,
     HubOpenClawLogsPayloadV1,
     HubOpenClawModelPayloadV1,
+    HubRunOncePayloadV1,
 )
 from orchestrator.storage import engine_for
 from orchestrator.models import (
@@ -56,6 +57,8 @@ from orchestrator.models import (
     RuntimeHubListResponse,
     RuntimeHubView,
     RuntimeProviderListResponse,
+    ScheduledRunListResponse,
+    ScheduledRunView,
     VersionResponse,
 )
 from orchestrator.services import (
@@ -133,26 +136,42 @@ async def dispatch_runtime_instance_action(
     action: str,
     session: AuthSessionView,
 ) -> RuntimeInstanceActionResponse:
-    if action not in {"start", "stop"}:
+    if action not in {"start", "stop", "run"}:
         raise HTTPException(status_code=404, detail="runtime action not found")
     require_hub_catalog(settings)
     require_owned_instance(service, instance_id, session)
     current = service.get_instance(instance_id)
-    if current is not None and current.deployment_mode == "scheduled":
-        # Stage A: schedules are stored but never triggered. Refuse here, before any Hub
-        # command exists, so the console gets a precise reason instead of a capability error.
-        raise HTTPException(
-            status_code=409,
-            detail="scheduled instances cannot be started or stopped yet: Hub-local scheduling is not implemented",
+    scheduled = current is not None and current.deployment_mode == "scheduled"
+    run_id: str | None = None
+    if action == "run":
+        if not scheduled:
+            raise HTTPException(status_code=409, detail="only scheduled instances can be run once on demand")
+        payload = HubRunOncePayloadV1(kind="run_once", run_id=uuid4(), trigger="manual", scheduled_for=datetime.now(UTC))
+        run_id = str(payload.run_id)
+        await dispatch_owned_instance_command(
+            settings,
+            service,
+            instance_id,
+            session,
+            HubCommandOperation.RUN_INSTANCE_ONCE,
+            operation_payload=payload,
+            timeout_seconds=min(payload.timeout_seconds, 300),
         )
-    operation = HubCommandOperation.START_INSTANCE if action == "start" else HubCommandOperation.STOP_INSTANCE
-    await dispatch_owned_instance_command(settings, service, instance_id, session, operation)
+    else:
+        operation = HubCommandOperation.START_INSTANCE if action == "start" else HubCommandOperation.STOP_INSTANCE
+        await dispatch_owned_instance_command(settings, service, instance_id, session, operation)
     result = service.get_instance(instance_id)
     if result is None:
         raise HTTPException(status_code=404, detail="instance not found")
+    if scheduled:
+        # For scheduled instances start/stop enable/disable the schedule; nothing is launched.
+        message = {"start": "schedule enabled", "stop": "schedule disabled", "run": "run completed by Machine Hub"}[action]
+    else:
+        message = f"{action} completed by Machine Hub"
     return RuntimeInstanceActionResponse(
-        message=f"{action} completed by Machine Hub",
+        message=message,
         instance=runtime_instance_view_with_hub(MachineHubService(settings.database_url), result),
+        run_id=run_id,
     )
 
 
@@ -245,8 +264,8 @@ def runtime_instance_view(instance: BotInstanceView) -> RuntimeInstanceView:
     if instance.kind == "whatsapp":
         capabilities.append("channel-pairing")
     if instance.deployment_mode == "scheduled":
-        # Mirrors the Hub inventory: lifecycle actions are not offered until scheduling ships.
-        capabilities = [item for item in capabilities if item not in {"start", "stop"}]
+        # start/stop enable/disable the schedule; run-once is the on-demand trigger.
+        capabilities.append("run-once")
     return RuntimeInstanceView(
         id=instance.id,
         name=instance.name or instance.id,
@@ -489,6 +508,24 @@ async def public_runtime_instance_action(
         return await dispatch_runtime_instance_action(settings, service, instance_id, action, session)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=exc.args[0]) from exc
+
+
+@router.get("/runtime/instances/{instance_id}/runs", response_model=ScheduledRunListResponse)
+async def public_runtime_instance_runs(
+    instance_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> ScheduledRunListResponse:
+    session = require_session(request)
+    settings = Settings()
+    service = openclaw_runtime_service(settings)
+    require_hub_catalog(settings)
+    require_owned_instance(service, instance_id, session)
+    try:
+        items = MachineHubService(settings.database_url).list_scheduled_runs(instance_id, limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ScheduledRunListResponse(items=[ScheduledRunView(**item) for item in items], total=len(items))
 
 
 @router.get("/auth/me", response_model=AuthSessionView)

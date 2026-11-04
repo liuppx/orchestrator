@@ -171,14 +171,8 @@ class OpenClawAdapter:
             if view.kind == "whatsapp":
                 capabilities.append(HubCommandOperation.PAIR_WHATSAPP.value)
             if deployment_mode == DeploymentMode.SCHEDULED:
-                # Scheduled instances are discrete runs: start/stop/restart will map to
-                # enabling/disabling the schedule in a later stage, not to a gateway launch.
-                unsupported = {
-                    HubCommandOperation.START_INSTANCE.value,
-                    HubCommandOperation.STOP_INSTANCE.value,
-                    HubCommandOperation.RESTART_INSTANCE.value,
-                }
-                capabilities = [item for item in capabilities if item not in unsupported]
+                # For scheduled instances start/stop enable/disable the schedule on this Hub
+                # (nothing is launched); run_instance_once / cancel_run are the real work.
                 capabilities.extend([HubCommandOperation.RUN_INSTANCE_ONCE.value, HubCommandOperation.CANCEL_RUN.value])
             instances.append(
                 HubRuntimeInstanceV1(
@@ -391,6 +385,10 @@ class OpenClawAdapter:
             expected_state = RuntimeObservedState.STOPPED
         else:
             return AdapterExecution(False, RuntimeObservedState.UNSUPPORTED, "UNSUPPORTED")
+        record = self.service.get_instance_raw(command.target_instance_id)
+        if record is not None and record[1].get("deployment_mode") == "scheduled":
+            # Enabling/disabling a schedule launches nothing, so there is no state to converge on.
+            return AdapterExecution(True, self._observed_state(record[1]), progress_percent=100)
         deadline = time.monotonic() + 5
         state = RuntimeObservedState.UNKNOWN
         while time.monotonic() < deadline:

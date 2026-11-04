@@ -292,8 +292,10 @@ class RuntimeInstanceView(BaseModel):
     capabilities: list[str]
     deployment_mode: Literal["service", "scheduled"] = "service"
     schedule: InstanceSchedule | None = None
-    # Stays False until Hub-local triggering ships; the UI must not imply a schedule is live.
+    # True once the catalog holds at least one run for this instance.
     schedule_executed: bool = False
+    latest_run_state: str | None = None
+    latest_run_at: str | None = None
     hub_id: str | None = None
     hub_status: str = "unknown"
     hub_last_seen_at: str | None = None
@@ -329,6 +331,7 @@ class RuntimeHubListResponse(BaseModel):
 class RuntimeInstanceActionResponse(BaseModel):
     message: str
     instance: RuntimeInstanceView
+    run_id: str | None = None
 
 
 class RuntimeInstanceCreateRequest(BotInstanceCreateRequest):
