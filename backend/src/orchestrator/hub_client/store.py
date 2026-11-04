@@ -113,6 +113,19 @@ class HubStateStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS hub_client_runs (
+                    run_id TEXT PRIMARY KEY,
+                    instance_id TEXT NOT NULL,
+                    runtime_type TEXT NOT NULL,
+                    scheduled_for TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    command_id TEXT,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(instance_id, scheduled_for)
+                );
                 """
             )
             self._connection.executemany(
@@ -221,6 +234,120 @@ class HubStateStore:
                 (through_sequence,),
             )
             self._set_meta("acked_sequence", str(through_sequence))
+
+    # --- scheduled runs -------------------------------------------------------------
+
+    @staticmethod
+    def _run_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": row["run_id"],
+            "instance_id": row["instance_id"],
+            "runtime_type": row["runtime_type"],
+            "scheduled_for": row["scheduled_for"],
+            "trigger": row["trigger"],
+            "state": row["state"],
+            "command_id": row["command_id"],
+            "result": json.loads(row["result_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def claim_run(
+        self,
+        run_id: str,
+        instance_id: str,
+        runtime_type: str,
+        scheduled_for: datetime,
+        trigger: str,
+        command_id: str | None = None,
+    ) -> bool:
+        """Record a queued run for one schedule slot.
+
+        ``(instance_id, scheduled_for)`` is the idempotency key: a Hub restart or a
+        replayed command cannot trigger the same slot twice. Returns ``False`` when
+        the slot or the run id already exists.
+        """
+        if scheduled_for.tzinfo is None:
+            raise ValueError("scheduled_for must be timezone-aware")
+        slot = scheduled_for.astimezone(timezone.utc).isoformat(timespec="microseconds")
+        now = _now()
+        with self._lock, self._connection:
+            try:
+                self._connection.execute(
+                    "INSERT INTO hub_client_runs"
+                    "(run_id, instance_id, runtime_type, scheduled_for, trigger, state, command_id, result_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'queued', ?, '{}', ?, ?)",
+                    (run_id, instance_id, runtime_type, slot, trigger, command_id, now, now),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM hub_client_runs WHERE run_id = ?", (run_id,)).fetchone()
+        return self._run_row(row) if row is not None else None
+
+    def runs_in_state(self, state: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM hub_client_runs WHERE state = ? ORDER BY created_at ASC", (state,)
+            ).fetchall()
+        return [self._run_row(row) for row in rows]
+
+    def last_scheduled_slot(self, instance_id: str) -> datetime | None:
+        """Most recent schedule-triggered slot recorded for an instance, if any."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT MAX(scheduled_for) AS slot FROM hub_client_runs WHERE instance_id = ? AND trigger = 'schedule'",
+                (instance_id,),
+            ).fetchone()
+        return datetime.fromisoformat(row["slot"]) if row is not None and row["slot"] else None
+
+    def schedule_anchor(self, instance_id: str, now: datetime) -> datetime:
+        """Point after which the next slot is due.
+
+        The last schedule-triggered slot when one exists; otherwise the moment this
+        Hub first observed the schedule, recorded durably so a schedule never fires
+        for slots that predate its arrival on this machine.
+        """
+        last = self.last_scheduled_slot(instance_id)
+        if last is not None:
+            return last
+        key = f"schedule_anchor:{instance_id}"
+        with self._lock, self._connection:
+            raw = self._meta(key)
+            if not raw:
+                self._set_meta(key, now.astimezone(timezone.utc).isoformat(timespec="microseconds"))
+                return now
+        return datetime.fromisoformat(raw)
+
+    def transition_run(
+        self,
+        run_id: str,
+        state: str,
+        event_builder: Callable[[int], T],
+        event_serializer: Callable[[T], dict[str, Any]],
+        result: dict[str, Any] | None = None,
+    ) -> T:
+        """Persist a run transition and its outbox event atomically (mirrors transition_command)."""
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT run_id FROM hub_client_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown run: {run_id}")
+            updated_at = _now()
+            self._connection.execute(
+                "UPDATE hub_client_runs SET state = ?, result_json = ?, updated_at = ? WHERE run_id = ?",
+                (state, json.dumps(result or {}, sort_keys=True, separators=(",", ":")), updated_at, run_id),
+            )
+            sequence = int(self._meta("next_sequence", "1"))
+            event = event_builder(sequence)
+            self._connection.execute(
+                "INSERT INTO hub_client_events(sequence, payload_json, created_at) VALUES (?, ?, ?)",
+                (sequence, json.dumps(event_serializer(event), sort_keys=True, separators=(",", ":")), updated_at),
+            )
+            self._set_meta("next_sequence", str(sequence + 1))
+        return event
 
     def heartbeat_due(self) -> bool:
         raw = self.get_meta("next_heartbeat_at")

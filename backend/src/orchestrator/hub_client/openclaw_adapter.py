@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -10,6 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from orchestrator.config import Settings
 from orchestrator.protocols.hub_v1 import (
     DeploymentMode,
+    HubCancelRunPayloadV1,
     HubCommandOperation,
     HubCommandV1,
     HubInstanceScheduleV1,
@@ -24,6 +26,9 @@ from orchestrator.protocols.hub_v1 import (
     HubOpenClawCreatePayloadV1,
     HubRuntimeAdapterV1,
     HubRuntimeInstanceV1,
+    HubRunCancelledResultV1,
+    HubRunOncePayloadV1,
+    HubRunOnceResultV1,
     RuntimeObservedState,
 )
 from orchestrator.models import BotInstanceCreateRequest
@@ -61,6 +66,8 @@ class OpenClawAdapter:
         HubCommandOperation.GET_INSTANCE_LOGS.value,
         HubCommandOperation.DIAGNOSE_INSTANCE.value,
         HubCommandOperation.PAIR_WHATSAPP.value,
+        HubCommandOperation.RUN_INSTANCE_ONCE.value,
+        HubCommandOperation.CANCEL_RUN.value,
     ]
     instance_capabilities = [
         HubCommandOperation.INSPECT_INSTANCE.value,
@@ -142,6 +149,8 @@ class OpenClawAdapter:
         if running:
             return RuntimeObservedState.RUNNING
         status = str(raw.get("status", "unknown")).lower()
+        if status == "completed":
+            return RuntimeObservedState.COMPLETED
         if status == "error":
             return RuntimeObservedState.ERROR
         if status in {"starting", "stopping"}:
@@ -162,14 +171,15 @@ class OpenClawAdapter:
             if view.kind == "whatsapp":
                 capabilities.append(HubCommandOperation.PAIR_WHATSAPP.value)
             if deployment_mode == DeploymentMode.SCHEDULED:
-                # No Hub-local scheduler yet: do not advertise lifecycle operations the
-                # Backend would otherwise be allowed to issue against a scheduled instance.
+                # Scheduled instances are discrete runs: start/stop/restart will map to
+                # enabling/disabling the schedule in a later stage, not to a gateway launch.
                 unsupported = {
                     HubCommandOperation.START_INSTANCE.value,
                     HubCommandOperation.STOP_INSTANCE.value,
                     HubCommandOperation.RESTART_INSTANCE.value,
                 }
                 capabilities = [item for item in capabilities if item not in unsupported]
+                capabilities.extend([HubCommandOperation.RUN_INSTANCE_ONCE.value, HubCommandOperation.CANCEL_RUN.value])
             instances.append(
                 HubRuntimeInstanceV1(
                     instance_id=view.id,
@@ -351,6 +361,22 @@ class OpenClawAdapter:
                     pair_log="logs/pair.log",
                 ),
             )
+        if command.operation == HubCommandOperation.RUN_INSTANCE_ONCE:
+            return self._run_once(command, context)
+        if command.operation == HubCommandOperation.CANCEL_RUN:
+            payload = command.operation_payload
+            if not isinstance(payload, HubCancelRunPayloadV1):
+                return AdapterExecution(False, RuntimeObservedState.UNSUPPORTED, "INVALID_OPERATION_PAYLOAD")
+            record = self.service.get_instance_raw(command.target_instance_id)
+            if record is None:
+                return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
+            # This adapter executes serially: by the time a cancel command runs, no run is in flight.
+            return AdapterExecution(
+                True,
+                self._observed_state(record[1]),
+                progress_percent=100,
+                result=HubRunCancelledResultV1(kind="run_cancelled", run_id=payload.run_id, state="already_finished"),
+            )
         if command.operation == HubCommandOperation.START_INSTANCE:
             self.service.start_instance(
                 command.target_instance_id,
@@ -375,6 +401,119 @@ class OpenClawAdapter:
                 return AdapterExecution(True, state, progress_percent=100)
             context.wait_for_cancellation(0.1)
         return AdapterExecution(False, state, "STATE_NOT_CONVERGED")
+
+    # Stage-B placeholder workload: a bounded, side-effect-free diagnostic probe that
+    # exercises the full scheduling pipeline. It is NOT an agent task; real CLI
+    # workloads arrive with the Codex / Claude Code adapters.
+    RUN_ONCE_WORKLOAD = "diagnose"
+
+    def schedule_enabled(self, instance_id: str) -> bool:
+        """A schedule only fires once its instance has been explicitly enabled (desired_state=running)."""
+        record = self.service.get_instance_raw(instance_id)
+        if record is None:
+            return False
+        raw = record[1]
+        return raw.get("deployment_mode") == "scheduled" and raw.get("desired_state") == "running"
+
+    @staticmethod
+    def _write_run_log(path: Path, lines: list[str]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _mark_run_outcome(self, instance_id: str, status: str, payload: HubRunOncePayloadV1, state: str) -> None:
+        # Re-read after the workload: the service may have refreshed the record meanwhile.
+        record = self.service.get_instance_raw(instance_id)
+        if record is None:
+            return
+        db, raw = record
+        raw["status"] = status
+        raw["updated_at"] = datetime.now(UTC).isoformat()
+        self.service.write_instance_event(
+            raw,
+            "run_once_finished",
+            {"run_id": str(payload.run_id), "trigger": payload.trigger, "state": state, "workload": self.RUN_ONCE_WORKLOAD},
+        )
+        self.service.persist_db(db)
+
+    def _run_once(self, command: HubCommandV1, context: AdapterExecutionContext) -> AdapterExecution:
+        payload = command.operation_payload
+        if not isinstance(payload, HubRunOncePayloadV1):
+            return AdapterExecution(False, RuntimeObservedState.UNSUPPORTED, "INVALID_OPERATION_PAYLOAD")
+        record = self.service.get_instance_raw(command.target_instance_id)
+        if record is None:
+            return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
+        _db, raw = record
+        if raw.get("deployment_mode") != "scheduled":
+            return AdapterExecution(False, self._observed_state(raw), "RUN_ONCE_REQUIRES_SCHEDULED_INSTANCE")
+        context.raise_if_cancelled()
+        started_at = datetime.now(UTC)
+        log_name = f"{payload.run_id}.log"
+        log_ref = f"logs/runs/{log_name}"
+        log_path = Path(str(raw.get("logs_dir", ""))) / "runs" / log_name
+        header = [
+            f"run_id={payload.run_id}",
+            f"trigger={payload.trigger}",
+            f"scheduled_for={payload.scheduled_for.isoformat()}",
+            f"workload={self.RUN_ONCE_WORKLOAD}",
+        ]
+        try:
+            diagnosis = self.service.diagnose_instance(
+                command.target_instance_id,
+                auto_recover=False,
+                cancellation_requested=lambda: context.cancellation_requested,
+            )
+        except KeyError:
+            return AdapterExecution(False, RuntimeObservedState.NOT_INSTALLED, "INSTANCE_NOT_FOUND")
+        except RuntimeError as exc:
+            finished_at = datetime.now(UTC)
+            summary = self._safe_log_text(str(exc), raw)[:2048]
+            self._write_run_log(log_path, [*header, "state=failed", f"error={summary}"])
+            self._mark_run_outcome(command.target_instance_id, "error", payload, "failed")
+            return AdapterExecution(
+                False,
+                RuntimeObservedState.ERROR,
+                "RUN_WORKLOAD_FAILED",
+                result=HubRunOnceResultV1(
+                    kind="instance_run",
+                    run_id=payload.run_id,
+                    state="failed",
+                    exit_code=1,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    log_ref=log_ref,
+                    summary=summary,
+                ),
+            )
+        finished_at = datetime.now(UTC)
+        self._write_run_log(
+            log_path,
+            [
+                *header,
+                "state=succeeded",
+                f"status={diagnosis.status}",
+                f"gateway_reachable={diagnosis.gateway_reachable}",
+                *[f"evidence={self._safe_log_text(item, raw)}" for item in diagnosis.evidence[:16]],
+            ],
+        )
+        summary = self._safe_log_text(
+            f"{self.RUN_ONCE_WORKLOAD}: status={diagnosis.status} gateway_reachable={diagnosis.gateway_reachable}", raw
+        )[:2048]
+        self._mark_run_outcome(command.target_instance_id, "completed", payload, "succeeded")
+        return AdapterExecution(
+            True,
+            RuntimeObservedState.COMPLETED,
+            progress_percent=100,
+            result=HubRunOnceResultV1(
+                kind="instance_run",
+                run_id=payload.run_id,
+                state="succeeded",
+                exit_code=0,
+                started_at=started_at,
+                finished_at=finished_at,
+                log_ref=log_ref,
+                summary=summary,
+            ),
+        )
 
     def _create_instance(self, command: HubCommandV1, context: AdapterExecutionContext) -> AdapterExecution:
         payload = command.create_payload

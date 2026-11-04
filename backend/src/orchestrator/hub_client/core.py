@@ -7,12 +7,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 from uuid import UUID, uuid4
 
 from orchestrator.protocols.hub_v1 import (
+    DeploymentMode,
     HubCommandResultAdapter,
     HubCommandResultV1,
     HubCommandEventV1,
@@ -25,13 +26,17 @@ from orchestrator.protocols.hub_v1 import (
     HubHeartbeatRequestV1,
     HubHeartbeatResponseV1,
     HubInventorySnapshotV1,
+    HubRunOncePayloadV1,
+    HubRunOnceResultV1,
     HubRuntimeAdapterV1,
     HubRuntimeInstanceV1,
+    HubScheduledRunEventV1,
     RuntimeObservedState,
     expected_result_kind,
 )
 
 from .http import HubTransportError
+from .scheduler import latest_slot
 from .store import HubProcessLock, HubStateStore
 
 
@@ -134,6 +139,7 @@ class HubCycleResult:
     executed_commands: int
     flushed_events: int
     pending_events: int
+    executed_runs: int = 0
 
 
 def load_hub_credential(path: Path | str) -> str:
@@ -159,14 +165,20 @@ class HubClient:
         adapters: Sequence[HubAdapter],
         lease_renew_interval_seconds: float = 20.0,
         lease_retry_interval_seconds: float = 1.0,
+        clock: Callable[[], datetime] | None = None,
+        run_timeout_seconds: int = 900,
     ):
         if lease_renew_interval_seconds <= 0 or lease_retry_interval_seconds <= 0:
             raise ValueError("Hub command lease intervals must be positive")
+        if run_timeout_seconds < 30:
+            raise ValueError("Hub run timeout must be at least 30 seconds")
         self.config = config
         self.transport = transport
         self.adapters = tuple(adapters)
         self.lease_renew_interval_seconds = lease_renew_interval_seconds
         self.lease_retry_interval_seconds = lease_retry_interval_seconds
+        self.run_timeout_seconds = run_timeout_seconds
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._adapters_by_type = {adapter.descriptor().runtime_type: adapter for adapter in self.adapters}
         if len(self._adapters_by_type) != len(self.adapters):
             raise ValueError("Hub adapters must have unique runtime_type values")
@@ -228,6 +240,8 @@ class HubClient:
         return len(events)
 
     def run_once(self) -> HubCycleResult:
+        # Runs left queued/running by a crashed process can never be completed safely.
+        self._recover_interrupted_runs()
         # Reconnect order: replay durable events before publishing fresh state.
         self.flush_events()
         heartbeat = None
@@ -264,8 +278,12 @@ class HubClient:
                         HubCommandOperation.CREATE_INSTANCE,
                         HubCommandOperation.DELETE_INSTANCE,
                         HubCommandOperation.UPDATE_INSTANCE_MODEL,
+                        HubCommandOperation.RUN_INSTANCE_ONCE,
                     }
                 )
+        executed_runs = self._run_due_schedules()
+        if executed_runs:
+            inventory_changed = True
         if inventory_changed:
             self.store.mark_inventory_due()
         flushed = self.flush_events()
@@ -282,7 +300,221 @@ class HubClient:
             executed_commands=executed,
             flushed_events=flushed,
             pending_events=self.store.pending_event_count,
+            executed_runs=executed_runs,
         )
+
+    @staticmethod
+    def _normalize_error_code(error_code: str | None) -> str | None:
+        if not error_code:
+            return None
+        normalized = re.sub(r"[^A-Z0-9_-]", "_", error_code.upper())[:64]
+        if not re.match(r"^[A-Z0-9]", normalized):
+            normalized = f"E_{normalized}"[:64]
+        return normalized
+
+    # --- scheduled runs -------------------------------------------------------------
+
+    def _append_run_event(
+        self,
+        run: dict,
+        state: str,
+        *,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        exit_code: int | None = None,
+        log_ref: str | None = None,
+        error_code: str | None = None,
+    ) -> dict:
+        """Persist a run transition plus its scheduled_run outbox event; returns the refreshed row."""
+        previous = run.get("result") or {}
+        if started_at is None and previous.get("started_at"):
+            started_at = datetime.fromisoformat(previous["started_at"])
+        normalized_error = self._normalize_error_code(error_code)
+        command_id = run.get("command_id")
+
+        def build(sequence: int) -> HubScheduledRunEventV1:
+            return HubScheduledRunEventV1(
+                type="scheduled_run",
+                event_id=uuid4(),
+                sequence=sequence,
+                occurred_at=self._clock(),
+                run_id=UUID(run["run_id"]),
+                instance_id=run["instance_id"],
+                runtime_type=run["runtime_type"],
+                trigger=run["trigger"],
+                scheduled_for=datetime.fromisoformat(run["scheduled_for"]),
+                state=state,
+                command_id=UUID(command_id) if command_id else None,
+                started_at=started_at,
+                finished_at=finished_at,
+                exit_code=exit_code,
+                log_ref=log_ref,
+                error_code=normalized_error,
+            )
+
+        self.store.transition_run(
+            run["run_id"],
+            state,
+            build,
+            lambda event: event.model_dump(mode="json"),
+            {
+                "started_at": started_at.isoformat() if started_at else None,
+                "finished_at": finished_at.isoformat() if finished_at else None,
+                "exit_code": exit_code,
+                "log_ref": log_ref,
+                "error_code": normalized_error,
+            },
+        )
+        refreshed = self.store.run(run["run_id"])
+        assert refreshed is not None
+        return refreshed
+
+    def _recover_interrupted_runs(self) -> None:
+        for run in [*self.store.runs_in_state("queued"), *self.store.runs_in_state("running")]:
+            started = (run.get("result") or {}).get("started_at")
+            self._append_run_event(
+                run,
+                "unknown",
+                finished_at=self._clock() if started else None,
+                error_code="RUN_INTERRUPTED",
+            )
+
+    def _finalize_run(self, run: dict, execution: AdapterExecution | None, uncertainty_reason: str | None) -> dict:
+        """Map an adapter outcome onto the run's terminal scheduled_run event."""
+        result = execution.result if execution is not None else None
+        if isinstance(result, HubRunOnceResultV1):
+            return self._append_run_event(
+                run,
+                result.state,
+                started_at=result.started_at,
+                finished_at=result.finished_at,
+                exit_code=result.exit_code,
+                log_ref=result.log_ref,
+                error_code=execution.error_code if execution is not None and result.state != "succeeded" else None,
+            )
+        now = self._clock()
+        if execution is not None and uncertainty_reason is None and not execution.success:
+            return self._append_run_event(run, "failed", finished_at=now, error_code=execution.error_code or "RUN_FAILED")
+        return self._append_run_event(run, "unknown", finished_at=now, error_code=uncertainty_reason or "RUN_INTERRUPTED")
+
+    def _track_manual_run(self, command: HubCommandV1) -> dict | None:
+        """Record a Backend-requested run so it is reported through the same scheduled_run events."""
+        payload = command.operation_payload
+        if command.operation != HubCommandOperation.RUN_INSTANCE_ONCE or not isinstance(payload, HubRunOncePayloadV1):
+            return None
+        claimed = self.store.claim_run(
+            str(payload.run_id),
+            command.target_instance_id,
+            command.runtime_type,
+            payload.scheduled_for,
+            payload.trigger,
+            command_id=str(command.command_id),
+        )
+        run = self.store.run(str(payload.run_id))
+        if run is None or run["state"] not in {"queued", "running"}:
+            return None
+        if claimed:
+            run = self._append_run_event(run, "queued")
+        return self._append_run_event(run, "running", started_at=self._clock())
+
+    def _run_local_operation(
+        self,
+        operation: Callable[[AdapterExecutionContext], AdapterExecution],
+        timeout_seconds: float,
+    ) -> tuple[AdapterExecution | None, str | None]:
+        """Execute a Hub-triggered run: no Backend lease exists, so only the timeout and shutdown bound it."""
+        context = AdapterExecutionContext()
+        self._active_execution_context = context
+        if self._shutdown_requested.is_set():
+            context.request_cancellation()
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hub-run") as executor:
+                future = executor.submit(operation, context)
+                deadline = time.monotonic() + timeout_seconds
+                while not future.done():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or self._shutdown_requested.is_set():
+                        break
+                    wait((future,), timeout=min(1.0, remaining))
+                if not future.done():
+                    context.request_cancellation()
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return None, "HUB_SHUTDOWN" if self._shutdown_requested.is_set() else "RUN_TIMEOUT"
+                try:
+                    return future.result(), None
+                except AdapterExecutionUncertain as exc:
+                    return None, exc.error_code
+                except Exception:  # noqa: BLE001
+                    return None, "ADAPTER_ERROR"
+        finally:
+            self._active_execution_context = None
+
+    def _execute_local_run(self, adapter: HubAdapter, instance: HubRuntimeInstanceV1, run_id: UUID, slot: datetime) -> None:
+        run = self.store.run(str(run_id))
+        assert run is not None
+        run = self._append_run_event(run, "queued")
+        payload = HubRunOncePayloadV1(
+            kind="run_once",
+            run_id=run_id,
+            trigger="schedule",
+            scheduled_for=slot,
+            timeout_seconds=self.run_timeout_seconds,
+        )
+        now = self._clock()
+        # A local command envelope for the adapter only: never stored as a Backend
+        # command, never lease-renewed, never reported through command events.
+        command = HubCommandV1(
+            command_id=uuid4(),
+            target_instance_id=instance.instance_id,
+            runtime_type=instance.runtime_type,
+            operation=HubCommandOperation.RUN_INSTANCE_ONCE,
+            desired_revision=1,
+            attempt=1,
+            trace_id=f"local-schedule-{run_id.hex}",
+            issued_at=now,
+            expires_at=now + timedelta(seconds=payload.timeout_seconds + 60),
+            operation_payload=payload,
+        )
+        run = self._append_run_event(run, "running", started_at=now)
+        execution, reason = self._run_local_operation(
+            lambda context: adapter.execute(command, context),
+            payload.timeout_seconds,
+        )
+        self._finalize_run(run, execution, reason)
+
+    def _run_due_schedules(self) -> int:
+        """Fire at most one due schedule slot per cycle so Backend polling stays responsive."""
+        if self._shutdown_requested.is_set():
+            return 0
+        now = self._clock()
+        for adapter in self.adapters:
+            enabled = getattr(adapter, "schedule_enabled", None)
+            if enabled is None:
+                continue
+            try:
+                instances = [HubRuntimeInstanceV1.model_validate(item) for item in adapter.discover()]
+            except Exception:  # noqa: BLE001
+                continue
+            for instance in instances:
+                if instance.deployment_mode != DeploymentMode.SCHEDULED or instance.schedule is None:
+                    continue
+                if HubCommandOperation.RUN_INSTANCE_ONCE.value not in instance.capabilities:
+                    continue
+                if not enabled(instance.instance_id):
+                    continue
+                anchor = self.store.schedule_anchor(instance.instance_id, now)
+                slot = latest_slot(instance.schedule, anchor, now)
+                if slot is None:
+                    continue
+                run_id = uuid4()
+                if not self.store.claim_run(str(run_id), instance.instance_id, instance.runtime_type, slot, "schedule"):
+                    continue
+                self._execute_local_run(adapter, instance, run_id, slot)
+                return 1
+        return 0
 
     def _append_command_event(
         self,
@@ -293,9 +525,7 @@ class HubClient:
         error_code: str | None = None,
         result: HubCommandResultV1 | None = None,
     ) -> None:
-        normalized_error = re.sub(r"[^A-Z0-9_-]", "_", error_code.upper())[:64] if error_code else None
-        if normalized_error and not re.match(r"^[A-Z0-9]", normalized_error):
-            normalized_error = f"E_{normalized_error}"[:64]
+        normalized_error = self._normalize_error_code(error_code)
 
         def build(sequence: int) -> HubCommandEventV1:
             return HubCommandEventV1(
@@ -461,6 +691,8 @@ class HubClient:
         if existing is None or existing["attempt"] < command.attempt:
             self._append_command_event(command, HubCommandPhase.ACCEPTED)
         self._append_command_event(command, HubCommandPhase.RUNNING)
+        tracked_run = self._track_manual_run(command)
+        run_outcome: tuple[AdapterExecution | None, str | None] = (None, "RUN_INTERRUPTED")
         try:
             operation = adapter.recover if recovering else adapter.execute
             execution, uncertainty_reason = self._run_adapter_operation(
@@ -469,6 +701,7 @@ class HubClient:
                 initial_lease,
             )
             if uncertainty_reason is not None:
+                run_outcome = (None, uncertainty_reason)
                 self._append_command_event(
                     command,
                     HubCommandPhase.UNKNOWN,
@@ -477,6 +710,7 @@ class HubClient:
                 )
                 return True
             if recovering and execution is None:
+                run_outcome = (None, "RECOVERY_AMBIGUOUS")
                 self._append_command_event(
                     command,
                     HubCommandPhase.UNKNOWN,
@@ -488,6 +722,7 @@ class HubClient:
             expected_result = expected_result_kind(command.operation)
             result_kind = execution.result.kind if execution.result is not None else None
             if execution.success and expected_result != result_kind:
+                run_outcome = (AdapterExecution(False, execution.observed_state, "INVALID_ADAPTER_RESULT"), None)
                 self._append_command_event(
                     command,
                     HubCommandPhase.FAILED,
@@ -496,6 +731,7 @@ class HubClient:
                 )
                 return True
             if result_kind is not None and result_kind != expected_result:
+                run_outcome = (AdapterExecution(False, execution.observed_state, "INVALID_ADAPTER_RESULT"), None)
                 self._append_command_event(
                     command,
                     HubCommandPhase.FAILED,
@@ -503,6 +739,7 @@ class HubClient:
                     error_code="INVALID_ADAPTER_RESULT",
                 )
                 return True
+            run_outcome = (execution, None)
             terminal_phase = HubCommandPhase.SUCCEEDED if execution.success else HubCommandPhase.FAILED
             self._append_command_event(
                 command,
@@ -513,6 +750,7 @@ class HubClient:
                 result=execution.result,
             )
         except AdapterExecutionUncertain as exc:
+            run_outcome = (None, exc.error_code)
             self._append_command_event(
                 command,
                 HubCommandPhase.UNKNOWN,
@@ -522,6 +760,7 @@ class HubClient:
             return True
         except Exception:  # noqa: BLE001
             if recovering:
+                run_outcome = (None, "RECOVERY_AMBIGUOUS")
                 self._append_command_event(
                     command,
                     HubCommandPhase.UNKNOWN,
@@ -529,10 +768,14 @@ class HubClient:
                     error_code="RECOVERY_AMBIGUOUS",
                 )
                 return True
+            run_outcome = (AdapterExecution(False, RuntimeObservedState.ERROR, "ADAPTER_ERROR"), None)
             self._append_command_event(
                 command,
                 HubCommandPhase.FAILED,
                 observed_state=RuntimeObservedState.ERROR,
                 error_code="ADAPTER_ERROR",
             )
+        finally:
+            if tracked_run is not None:
+                self._finalize_run(tracked_run, *run_outcome)
         return True

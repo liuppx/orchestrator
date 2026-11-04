@@ -389,6 +389,8 @@ _EXPECTED_PAYLOAD_KIND = {
     HubCommandOperation.RUN_INSTANCE_ONCE: "run_once",
     HubCommandOperation.CANCEL_RUN: "cancel_run",
 }
+# run_once / cancel_run payloads are runtime-agnostic; these remain OpenClaw-specific.
+_OPENCLAW_ONLY_PAYLOAD_KINDS = {"update_model", "get_logs", "diagnose"}
 
 
 def validate_command_payloads(
@@ -404,10 +406,11 @@ def validate_command_payloads(
         raise ValueError("operation_payload must be present only for operations that require parameters")
     if operation == HubCommandOperation.CREATE_INSTANCE and runtime_type != "openclaw":
         raise ValueError("create_instance is currently supported only for OpenClaw")
-    if operation_payload is not None and runtime_type != "openclaw":
+    payload_kind = getattr(operation_payload, "kind", None) if operation_payload is not None else None
+    if payload_kind in _OPENCLAW_ONLY_PAYLOAD_KINDS and runtime_type != "openclaw":
         raise ValueError("operation_payload is currently supported only for OpenClaw")
     expected_kind = _EXPECTED_PAYLOAD_KIND.get(operation)
-    if expected_kind and operation_payload is not None and getattr(operation_payload, "kind", None) != expected_kind:
+    if expected_kind and operation_payload is not None and payload_kind != expected_kind:
         raise ValueError("operation_payload kind does not match the command operation")
 
 

@@ -650,6 +650,8 @@ class PublicAuthApiTest(unittest.TestCase):
                 "get_instance_logs",
                 "diagnose_instance",
                 "pair_whatsapp",
+                "run_instance_once",
+                "cancel_run",
             ],
         )
         keep_running = threading.Event()
