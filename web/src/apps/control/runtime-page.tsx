@@ -1,24 +1,52 @@
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { ArrowUpRight, CalendarClock, CircleAlert, CircleCheck, CircleX, Clock3, Play, RefreshCw, Search, Server, Square, Terminal } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, CircleAlert, CircleCheck, CircleX, Clock3, Play, PlayCircle, RefreshCw, Search, Server, Square, Terminal } from 'lucide-react'
 
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
-import { useRuntimeHubs, useRuntimeInstanceDiagnose, useRuntimeInstanceLogs, useRuntimeInstances } from '../../platform/agents/queries'
+import { useRuntimeHubs, useRuntimeInstanceDiagnose, useRuntimeInstanceLogs, useRuntimeInstances, useScheduledRuns } from '../../platform/agents/queries'
 import { useRuntimeInstanceAction } from '../../platform/agents/mutations'
 import { scheduleLabel } from '../../platform/core/schedule'
-import type { RuntimeInstance } from '../../platform/core/types'
+import type { RunState, RuntimeInstance, ScheduledRun } from '../../platform/core/types'
 
 type StatusFilter = 'all' | 'running' | 'stopped' | 'attention'
 
 const EMPTY_INSTANCES: RuntimeInstance[] = []
+const EMPTY_RUNS: ScheduledRun[] = []
 
 function stateLabel(value: string) {
   const labels: Record<string, string> = {
-    created: '已创建', starting: '启动中', running: '运行中', stopping: '停止中', stopped: '已停止', error: '异常', unknown: '未知',
+    created: '已创建', starting: '启动中', running: '运行中', stopping: '停止中', stopped: '已停止', completed: '已完成', error: '异常', unknown: '未知',
   }
   return labels[value] ?? value
+}
+
+function runStateLabel(value: RunState | null | undefined) {
+  const labels: Record<RunState, string> = {
+    queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', cancelled: '已取消', unknown: '结果未知',
+  }
+  return value ? labels[value] : '尚未运行'
+}
+
+function runStateVariant(value: RunState | null | undefined): 'success' | 'danger' | 'muted' {
+  if (value === 'succeeded') return 'success'
+  if (value === 'failed' || value === 'unknown') return 'danger'
+  return 'muted'
+}
+
+function runTriggerLabel(value: ScheduledRun['trigger']) {
+  return value === 'manual' ? '手动' : '计划'
+}
+
+function runDuration(run: ScheduledRun) {
+  if (!run.started_at || !run.finished_at) return '—'
+  const seconds = Math.max(0, Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000))
+  return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`
+}
+
+function scheduleEnabled(instance: RuntimeInstance) {
+  return instance.desired_state === 'running'
 }
 
 function hubStateLabel(value: string) {
@@ -46,6 +74,8 @@ export function RuntimePage() {
   const selected = instances.find((item) => item.id === selectedId) ?? instances[0] ?? null
   const logsQuery = useRuntimeInstanceLogs(selected?.id ?? null)
   const diagnoseQuery = useRuntimeInstanceDiagnose(selected?.id ?? null)
+  const runsQuery = useScheduledRuns(selected?.deployment_mode === 'scheduled' ? selected.id : null)
+  const runs = runsQuery.data?.items ?? EMPTY_RUNS
   const runtimeAction = useRuntimeInstanceAction()
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -134,7 +164,12 @@ export function RuntimePage() {
                   <td><div className="state-pair"><span>{instance.workload_type}</span>{instance.deployment_mode === 'scheduled' ? <Badge variant="muted"><CalendarClock className="mr-1 h-3 w-3" aria-hidden="true" />定时任务</Badge> : null}</div></td>
                   <td>
                     {instance.deployment_mode === 'scheduled' ? (
-                      <div className="state-pair"><span>{scheduleLabel(instance.schedule)}</span><Badge variant="muted">调度未执行</Badge></div>
+                      <div className="state-pair">
+                        <span>{scheduleLabel(instance.schedule)} · {scheduleEnabled(instance) ? '已启用' : '未启用'}</span>
+                        <Badge variant={instance.schedule_executed ? runStateVariant(instance.latest_run_state) : 'muted'}>
+                          {instance.schedule_executed ? `上次${runStateLabel(instance.latest_run_state)}` : '尚未运行'}
+                        </Badge>
+                      </div>
                     ) : (
                       <div className="state-pair"><span>{stateLabel(instance.desired_state)}</span><Badge variant={instance.observed_state === 'running' ? 'success' : ['error', 'unknown'].includes(instance.observed_state) ? 'danger' : 'muted'}>{stateLabel(instance.observed_state)}</Badge></div>
                     )}
@@ -143,7 +178,14 @@ export function RuntimePage() {
                   <td><code>{instance.endpoint.replace('http://', '')}</code></td>
                   <td>
                     {instance.deployment_mode === 'scheduled' ? (
-                      <span className="text-xs text-slate-500">调度未接入</span>
+                      <div className="flex flex-wrap gap-2">
+                        {scheduleEnabled(instance) ? (
+                          <Button variant="outline" size="sm" aria-label={`停用 ${instance.name} 的计划`} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'stop' })}><Square className="h-3.5 w-3.5" />停用</Button>
+                        ) : (
+                          <Button variant="outline" size="sm" aria-label={`启用 ${instance.name} 的计划`} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'start' })}><Play className="h-3.5 w-3.5" />启用</Button>
+                        )}
+                        <Button variant="outline" size="sm" aria-label={`立即运行 ${instance.name} 一次`} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'run' })}><PlayCircle className="h-3.5 w-3.5" />运行一次</Button>
+                      </div>
                     ) : instance.observed_state === 'running' ? (
                       <Button variant="outline" size="sm" aria-label={`停止 ${instance.name}`} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'stop' })}><Square className="h-3.5 w-3.5" />停止</Button>
                     ) : (
@@ -179,21 +221,28 @@ export function RuntimePage() {
                   <strong>{instance.name}</strong>
                   <small>{instance.id}</small>
                 </button>
-                <Badge variant={instance.deployment_mode === 'scheduled' ? 'muted' : instance.observed_state === 'running' ? 'success' : ['error', 'unknown'].includes(instance.observed_state) ? 'danger' : 'muted'}>
-                  {instance.deployment_mode === 'scheduled' ? '调度未执行' : stateLabel(instance.observed_state)}
+                <Badge variant={instance.deployment_mode === 'scheduled' ? (instance.schedule_executed ? runStateVariant(instance.latest_run_state) : 'muted') : instance.observed_state === 'running' ? 'success' : ['error', 'unknown'].includes(instance.observed_state) ? 'danger' : 'muted'}>
+                  {instance.deployment_mode === 'scheduled' ? (instance.schedule_executed ? `上次${runStateLabel(instance.latest_run_state)}` : '尚未运行') : stateLabel(instance.observed_state)}
                 </Badge>
               </div>
               <div className="runtime-mobile-meta">
                 <div><span>机器 Hub</span><strong>{instance.hub_id ?? '未分配'}</strong></div>
                 <div><span>运行时</span><strong>{instance.runtime_type} / {instance.workload_type}</strong></div>
-                {instance.deployment_mode === 'scheduled' ? <div><span>计划</span><strong>{scheduleLabel(instance.schedule)}</strong></div> : null}
+                {instance.deployment_mode === 'scheduled' ? <div><span>计划</span><strong>{scheduleLabel(instance.schedule)} · {scheduleEnabled(instance) ? '已启用' : '未启用'}</strong></div> : null}
                 <div><span>最近命令</span><strong><CommandIcon status={instance.latest_command_status} />{commandStateLabel(instance.latest_command_status)}</strong></div>
                 <div><span>模型</span><strong>{instance.model || '—'}</strong></div>
               </div>
               <div className="runtime-mobile-card-footer">
                 <code>{instance.endpoint.replace('http://', '')}</code>
                 {instance.deployment_mode === 'scheduled' ? (
-                  <span className="text-xs text-slate-500">调度未接入</span>
+                  <div className="flex flex-wrap gap-2">
+                    {scheduleEnabled(instance) ? (
+                      <Button variant="outline" size="sm" aria-label={'停用 ' + instance.name + ' 的计划'} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'stop' })}><Square className="h-3.5 w-3.5" />停用</Button>
+                    ) : (
+                      <Button variant="outline" size="sm" aria-label={'启用 ' + instance.name + ' 的计划'} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'start' })}><Play className="h-3.5 w-3.5" />启用</Button>
+                    )}
+                    <Button variant="outline" size="sm" aria-label={'立即运行 ' + instance.name + ' 一次'} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'run' })}><PlayCircle className="h-3.5 w-3.5" />运行一次</Button>
+                  </div>
                 ) : instance.observed_state === 'running' ? (
                   <Button variant="outline" size="sm" aria-label={'停止 ' + instance.name} disabled={runtimeAction.isPending} onClick={() => runtimeAction.mutate({ instanceId: instance.id, action: 'stop' })}><Square className="h-3.5 w-3.5" />停止</Button>
                 ) : (
@@ -215,8 +264,8 @@ export function RuntimePage() {
           <div className="detail-grid">
             <div><span>部署形态</span><strong>{selected.deployment_mode === 'scheduled' ? '定时任务' : '常驻服务'}</strong></div>
             {selected.deployment_mode === 'scheduled' ? <div><span>调度计划</span><strong>{scheduleLabel(selected.schedule)}</strong></div> : null}
-            <div><span>期望状态</span><strong>{selected.deployment_mode === 'scheduled' ? '计划已登记' : stateLabel(selected.desired_state)}</strong></div>
-            <div><span>观测状态</span><strong>{selected.deployment_mode === 'scheduled' ? '调度未执行' : stateLabel(selected.observed_state)}</strong></div>
+            <div><span>期望状态</span><strong>{selected.deployment_mode === 'scheduled' ? (scheduleEnabled(selected) ? '计划已启用' : '计划未启用') : stateLabel(selected.desired_state)}</strong></div>
+            <div><span>观测状态</span><strong>{selected.deployment_mode === 'scheduled' ? (selected.schedule_executed ? `上次运行${runStateLabel(selected.latest_run_state)}` : '尚未运行') : stateLabel(selected.observed_state)}</strong></div>
             <div><span>机器 Hub</span><strong>{selected.hub_id ?? '未分配'} · {hubStateLabel(selected.hub_status)}</strong></div>
             <div><span>最近命令</span><strong>{commandStateLabel(selected.latest_command_status)}</strong></div>
             <div><span>本机地址</span><code>{selected.endpoint}</code></div>
@@ -224,10 +273,36 @@ export function RuntimePage() {
           </div>
           {selected.deployment_mode === 'scheduled' ? (
             <>
-              <div className="log-heading"><CalendarClock className="h-4 w-4" /><span>运行历史</span><span>{selected.schedule_executed ? '' : '调度未接入'}</span></div>
-              <div className="empty-inline" role="status">
-                尚无运行记录。当前阶段只登记计划；机器 Hub 的本地调度器交付后，每次运行会在此列出触发时间、结果与日志。
+              <div className="log-heading">
+                <CalendarClock className="h-4 w-4" />
+                <span>运行历史</span>
+                <span>{runsQuery.isFetching ? '更新中…' : `${runsQuery.data?.total ?? 0} 条 · 自动刷新`}</span>
               </div>
+              {runsQuery.error ? <div className="inline-error" role="alert"><CircleAlert className="h-4 w-4" />{runsQuery.error.message}</div> : null}
+              {!runsQuery.isLoading && !runsQuery.error && runs.length === 0 ? (
+                <div className="empty-inline" role="status">
+                  尚无运行记录。启用计划后机器 Hub 会按计划在本机触发；也可以点"运行一次"立即执行。当前 OpenClaw 的单次运行是一次诊断探针，用于验证调度链路，不是 Agent 任务。
+                </div>
+              ) : null}
+              {runs.length > 0 ? (
+                <div className="table-scroll">
+                  <table className="runtime-table" aria-label="运行历史">
+                    <thead><tr><th>触发时间</th><th>来源</th><th>结果</th><th>退出码</th><th>耗时</th><th>日志</th></tr></thead>
+                    <tbody>
+                      {runs.map((run) => (
+                        <tr key={run.id}>
+                          <td>{new Date(run.scheduled_for).toLocaleString()}</td>
+                          <td>{runTriggerLabel(run.trigger)}</td>
+                          <td><Badge variant={runStateVariant(run.state)}>{runStateLabel(run.state)}</Badge></td>
+                          <td>{run.exit_code ?? '—'}</td>
+                          <td>{runDuration(run)}</td>
+                          <td>{run.log_ref ? <code>{run.log_ref}</code> : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
             </>
           ) : null}
           <div className="log-heading"><Terminal className="h-4 w-4" /><span>最近运行日志</span><span>自动刷新</span></div>

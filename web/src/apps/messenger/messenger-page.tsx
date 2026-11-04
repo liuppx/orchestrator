@@ -27,6 +27,7 @@ import {
   useMessengerInstanceAction,
   useMessengerInstanceCreate,
   useMessengerWhatsappPair,
+  useRuntimeInstanceAction,
 } from '../../platform/agents/mutations'
 import {
   useRuntimeInstanceDiagnose,
@@ -90,6 +91,7 @@ export function MessengerPage() {
   const stopAction = useMessengerInstanceAction(selectedInstance?.id ?? null, 'stop')
   const createInstance = useMessengerInstanceCreate()
   const pairWhatsapp = useMessengerWhatsappPair(selectedInstance?.id ?? null)
+  const runtimeAction = useRuntimeInstanceAction()
   const form = useForm<MessengerCreateForm>({
     defaultValues: {
       kind: 'whatsapp',
@@ -291,7 +293,7 @@ export function MessengerPage() {
                   </>
                 )}
                 <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 md:col-span-2 xl:col-span-4" role="note">
-                  定时任务目前只登记计划，机器 Hub 尚未交付本地调度器，不会自动触发执行；创建后不提供启动 / 停止操作。
+                  定时任务目前的单次运行是一次诊断探针，用于验证调度链路，不是 Agent 任务；创建后需在实例详情中启用计划才会按计划触发。
                 </div>
               </>
             ) : null}
@@ -365,7 +367,7 @@ export function MessengerPage() {
                     {instance.deployment_mode === 'scheduled' ? (
                       <div className="mt-2 flex flex-wrap gap-2">
                         <Badge variant="muted">定时任务</Badge>
-                        <Badge variant="muted">调度未执行</Badge>
+                        <Badge variant={instance.desired_state === 'running' ? 'success' : 'muted'}>{instance.desired_state === 'running' ? '计划已启用' : '计划未启用'}</Badge>
                       </div>
                     ) : null}
                     <div className="mt-3 grid gap-2 text-xs text-slate-500">
@@ -407,16 +409,35 @@ export function MessengerPage() {
                     {selectedInstance.deployment_mode === 'scheduled' ? (
                       <>
                         <Badge variant="muted">定时任务 · {scheduleLabel(selectedInstance.schedule)}</Badge>
-                        <Badge variant="muted">调度未执行</Badge>
+                        <Badge variant={selectedInstance.desired_state === 'running' ? 'success' : 'muted'}>{selectedInstance.desired_state === 'running' ? '计划已启用' : '计划未启用'}</Badge>
                       </>
                     ) : null}
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {selectedInstance.deployment_mode === 'scheduled' ? (
-                    <span className="self-center text-sm text-slate-500" role="note">
-                      定时任务暂不提供启动 / 停止；本地调度器交付后可在此手动运行一次。
-                    </span>
+                    <>
+                      {selectedInstance.desired_state === 'running' ? (
+                        <Button variant="outline" onClick={() => stopAction.mutate()} disabled={stopAction.isPending}>
+                          <SquareTerminal className="h-4 w-4" />
+                          {stopAction.isPending ? '停用中...' : '停用计划'}
+                        </Button>
+                      ) : (
+                        <Button onClick={() => startAction.mutate()} disabled={startAction.isPending}>
+                          <Play className="h-4 w-4" />
+                          {startAction.isPending ? '启用中...' : '启用计划'}
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        onClick={() => runtimeAction.mutate({ instanceId: selectedInstance.id, action: 'run' })}
+                        disabled={runtimeAction.isPending}
+                      >
+                        <Play className="h-4 w-4" />
+                        {runtimeAction.isPending ? '运行中...' : '运行一次'}
+                      </Button>
+                      <Link to="/runtime" className="self-center text-sm text-emerald-700">查看运行历史</Link>
+                    </>
                   ) : (
                     <>
                       <Button

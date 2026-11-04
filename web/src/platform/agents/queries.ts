@@ -11,6 +11,7 @@ import type {
   RuntimeInstanceListResponse,
   RuntimeHubListResponse,
   RuntimeProviderListResponse,
+  ScheduledRunListResponse,
 } from '../core/types'
 
 export function useAgents() {
@@ -73,6 +74,16 @@ export function useRuntimeHubs() {
     queryKey: ['runtime', 'hubs'],
     queryFn: () => api<RuntimeHubListResponse>('/api/v1/public/runtime/hubs'),
     refetchInterval: 10000,
+  })
+}
+
+/** Run history of a scheduled instance; pass null for service instances to skip the request. */
+export function useScheduledRuns(instanceId: string | null) {
+  return useQuery({
+    queryKey: ['runtime', 'runs', instanceId],
+    queryFn: () => api<ScheduledRunListResponse>(`/api/v1/public/runtime/instances/${instanceId}/runs?limit=50`),
+    enabled: Boolean(instanceId),
+    refetchInterval: 5000,
   })
 }
 

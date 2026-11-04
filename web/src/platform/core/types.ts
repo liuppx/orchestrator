@@ -116,6 +116,7 @@ export type BotInstanceView = {
   logs_dir: string
   last_error: string | null
   dingtalk_client_id?: string | null
+  desired_state?: string
   deployment_mode: DeploymentMode
   schedule: InstanceSchedule | null
 }
@@ -139,6 +140,32 @@ export type RuntimeProviderListResponse = {
 }
 
 export type DeploymentMode = 'service' | 'scheduled'
+
+export type RunState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown'
+
+export type ScheduledRun = {
+  id: string
+  instance_id: string
+  trigger: 'schedule' | 'manual'
+  scheduled_for: string
+  started_at: string | null
+  finished_at: string | null
+  state: RunState
+  exit_code: number | null
+  log_ref: string | null
+  command_id: string | null
+}
+
+export type ScheduledRunListResponse = {
+  items: ScheduledRun[]
+  total: number
+}
+
+export type RuntimeInstanceActionResponse = {
+  message: string
+  instance: RuntimeInstance
+  run_id: string | null
+}
 
 export type InstanceSchedule = {
   kind: 'cron' | 'interval'
@@ -164,8 +191,10 @@ export type RuntimeInstance = {
   capabilities: string[]
   deployment_mode: DeploymentMode
   schedule: InstanceSchedule | null
-  /** Stays false until the Hub-local scheduler ships; the console must not imply a schedule is live. */
+  /** True once the control plane holds at least one run for this instance. */
   schedule_executed: boolean
+  latest_run_state: RunState | null
+  latest_run_at: string | null
   hub_id: string | null
   hub_status: string
   hub_last_seen_at: string | null
