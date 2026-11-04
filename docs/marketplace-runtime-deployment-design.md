@@ -116,7 +116,7 @@ class HubCommandOperation(StrEnum):
 - 协议：`hub_v1` 增加回报字段（4.2），导出 JSON Schema，更新契约测试。
 - Web：创建实例时选择"服务 / 定时任务"，定时填写计划；实例列表区分两种形态。
 - **本阶段不改 Hub 执行逻辑**，scheduled 实例可先只落期望状态、不真正触发（显式标注"调度未执行"）。
-- 实现进度：A1 数据库模型与迁移 `0010_instance_deployment_mode`、A2 Pydantic schema 校验、A3 `croniter` 依赖、A4 协议回报字段（`HubRuntimeInstanceV1.deployment_mode/schedule`，`protocol_version` 保持 `1.0`）、A5 服务层贯通（路由 → `HubOpenClawCreatePayloadV1` → Backend 目录行 → Hub Adapter → 本机状态 → inventory 回报 → 目录镜像）、A6 诚实护栏（Backend 对 scheduled 实例的 start/stop 返回 409；Hub inventory 不为 scheduled 实例申报 `start/stop/restart_instance` 能力；`OpenClawRuntimeService.start_instance` 显式拒绝）已完成并有测试（`backend/tests/test_instance_deployment_mode.py`、`test_public_auth_api.py::test_runtime_console_creates_scheduled_instance_and_refuses_lifecycle_actions`）；A7 Web 尚未开始。
+- 实现进度：A1 数据库模型与迁移 `0010_instance_deployment_mode`、A2 Pydantic schema 校验、A3 `croniter` 依赖、A4 协议回报字段（`HubRuntimeInstanceV1.deployment_mode/schedule`，`protocol_version` 保持 `1.0`）、A5 服务层贯通（路由 → `HubOpenClawCreatePayloadV1` → Backend 目录行 → Hub Adapter → 本机状态 → inventory 回报 → 目录镜像）、A6 诚实护栏（Backend 对 scheduled 实例的 start/stop 返回 409；Hub inventory 不为 scheduled 实例申报 `start/stop/restart_instance` 能力；`OpenClawRuntimeService.start_instance` 显式拒绝）已完成并有测试（`backend/tests/test_instance_deployment_mode.py`、`test_public_auth_api.py::test_runtime_console_creates_scheduled_instance_and_refuses_lifecycle_actions`）；A7 Web 已完成（Messenger 创建表单增加"部署形态"与 cron / 间隔计划输入并附阶段说明；运行时页与 Messenger 列表/详情对 scheduled 实例显示"定时任务 / 调度未执行"徽标、隐藏启动 / 停止、展示计划与空态运行历史；`npm run lint` 与 `npm run build` 通过，未做浏览器人工核验）。阶段 A 至此完整交付。
 
 ### 阶段 B — 定时执行能力（Hub + 命令闭环）
 

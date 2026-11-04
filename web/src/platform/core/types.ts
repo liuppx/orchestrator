@@ -116,6 +116,8 @@ export type BotInstanceView = {
   logs_dir: string
   last_error: string | null
   dingtalk_client_id?: string | null
+  deployment_mode: DeploymentMode
+  schedule: InstanceSchedule | null
 }
 
 export type BotInstanceListResponse = {
@@ -136,6 +138,15 @@ export type RuntimeProviderListResponse = {
   items: RuntimeProvider[]
 }
 
+export type DeploymentMode = 'service' | 'scheduled'
+
+export type InstanceSchedule = {
+  kind: 'cron' | 'interval'
+  expr: string | null
+  seconds: number | null
+  timezone: string | null
+}
+
 export type RuntimeInstance = {
   id: string
   name: string
@@ -151,6 +162,10 @@ export type RuntimeInstance = {
   created_at: string
   updated_at: string
   capabilities: string[]
+  deployment_mode: DeploymentMode
+  schedule: InstanceSchedule | null
+  /** Stays false until the Hub-local scheduler ships; the console must not imply a schedule is live. */
+  schedule_executed: boolean
   hub_id: string | null
   hub_status: string
   hub_last_seen_at: string | null
@@ -208,6 +223,8 @@ export type BotInstanceCreateRequest = {
   template?: string | null
   dingtalk_client_id?: string | null
   dingtalk_client_secret?: string | null
+  deployment_mode?: DeploymentMode
+  schedule?: InstanceSchedule | null
 }
 
 export type BotInstancePairResponse = {
