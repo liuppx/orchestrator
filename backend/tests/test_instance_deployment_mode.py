@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
@@ -16,10 +17,18 @@ from sqlalchemy.orm import Session
 from orchestrator.models.schemas import InstanceSchedule, RuntimeInstanceCreateRequest, RuntimeInstanceView
 from orchestrator.protocols.hub_v1 import (
     DeploymentMode,
+    HubCancelRunPayloadV1,
+    HubCommandIssueRequestV1,
+    HubCommandOperation,
+    HubCommandResultAdapter,
+    HubCommandV1,
+    HubEventBatchRequestV1,
     HubInstanceScheduleV1,
     HubInventorySnapshotV1,
     HubOpenClawCreatePayloadV1,
+    HubRunOncePayloadV1,
     HubRuntimeInstanceV1,
+    expected_result_kind,
     hub_protocol_json_schema,
 )
 from orchestrator.services.openclaw import OpenClawRuntimeService
@@ -241,6 +250,134 @@ class OpenClawViewFromRawTest(unittest.TestCase):
         self.assertEqual(view.deployment_mode, "scheduled")
         self.assertEqual(view.schedule.expr, "0 2 * * *")
         self.assertEqual(view.schedule.timezone, "UTC")
+
+
+class RunOnceProtocolContractTest(unittest.TestCase):
+    def _command_base(self, operation: str) -> dict:
+        now = datetime.now(UTC)
+        return {
+            "command_id": str(uuid4()),
+            "target_instance_id": "nightly-1",
+            "runtime_type": "openclaw",
+            "operation": operation,
+            "desired_revision": 1,
+            "attempt": 1,
+            "trace_id": "run-once-trace",
+            "issued_at": now,
+            "expires_at": now + timedelta(minutes=20),
+        }
+
+    def test_run_once_command_requires_a_typed_payload_without_shell_fields(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "operation_payload must be present"):
+            HubCommandV1.model_validate(self._command_base("run_instance_once"))
+
+        run_id = uuid4()
+        payload = HubRunOncePayloadV1(kind="run_once", run_id=run_id, trigger="manual", scheduled_for=datetime.now(UTC))
+        command = HubCommandV1.model_validate({**self._command_base("run_instance_once"), "operation_payload": payload.model_dump(mode="json")})
+        self.assertEqual(command.operation, HubCommandOperation.RUN_INSTANCE_ONCE)
+        self.assertEqual(command.operation_payload.timeout_seconds, 900)
+
+        with self.assertRaises(ValidationError):
+            HubRunOncePayloadV1.model_validate({**payload.model_dump(mode="json"), "command": "rm -rf /"})
+        with self.assertRaises(ValidationError):
+            HubRunOncePayloadV1.model_validate({**payload.model_dump(mode="json"), "timeout_seconds": 10})
+        with self.assertRaisesRegex(ValidationError, "kind does not match"):
+            HubCommandV1.model_validate({**self._command_base("cancel_run"), "operation_payload": payload.model_dump(mode="json")})
+
+        issue = HubCommandIssueRequestV1.model_validate(
+            {
+                "target_instance_id": "nightly-1",
+                "runtime_type": "openclaw",
+                "operation": "cancel_run",
+                "idempotency_key": "cancel-1",
+                "desired_revision": 1,
+                "trace_id": "cancel-1",
+                "expires_at": datetime.now(UTC) + timedelta(minutes=1),
+                "operation_payload": HubCancelRunPayloadV1(kind="cancel_run", run_id=run_id).model_dump(mode="json"),
+            }
+        )
+        self.assertEqual(issue.operation_payload.run_id, run_id)
+        self.assertEqual(expected_result_kind(HubCommandOperation.RUN_INSTANCE_ONCE), "instance_run")
+        self.assertEqual(expected_result_kind(HubCommandOperation.CANCEL_RUN), "run_cancelled")
+
+    def test_run_once_result_is_bounded_and_internally_consistent(self) -> None:
+        started = datetime.now(UTC)
+        valid = {
+            "kind": "instance_run",
+            "run_id": str(uuid4()),
+            "state": "succeeded",
+            "exit_code": 0,
+            "started_at": started,
+            "finished_at": started + timedelta(seconds=5),
+            "log_ref": "logs/runs/2026-11-05T09-00-00Z.log",
+            "summary": "ok",
+        }
+        self.assertEqual(HubCommandResultAdapter.validate_python(valid).kind, "instance_run")
+        with self.assertRaisesRegex(ValidationError, "non-zero exit_code"):
+            HubCommandResultAdapter.validate_python({**valid, "exit_code": 1})
+        with self.assertRaisesRegex(ValidationError, "finished_at must not be earlier"):
+            HubCommandResultAdapter.validate_python({**valid, "finished_at": started - timedelta(seconds=1)})
+        with self.assertRaises(ValidationError):
+            HubCommandResultAdapter.validate_python({**valid, "log_ref": "/var/log/anything.log"})
+        with self.assertRaises(ValidationError):
+            HubCommandResultAdapter.validate_python({**valid, "summary": "x" * 2049})
+        cancelled = HubCommandResultAdapter.validate_python({"kind": "run_cancelled", "run_id": str(uuid4()), "state": "already_finished"})
+        self.assertEqual(cancelled.state, "already_finished")
+
+    def test_scheduled_run_events_report_hub_local_triggers(self) -> None:
+        occurred_at = datetime.now(UTC)
+        base = {
+            "type": "scheduled_run",
+            "event_id": str(uuid4()),
+            "sequence": 1,
+            "occurred_at": occurred_at,
+            "run_id": str(uuid4()),
+            "instance_id": "nightly-1",
+            "runtime_type": "openclaw",
+            "trigger": "schedule",
+            "scheduled_for": occurred_at,
+            "state": "queued",
+        }
+        batch = HubEventBatchRequestV1.model_validate({"protocol_version": "1.0", "after_sequence": 0, "events": [base]})
+        self.assertEqual(batch.events[0].type, "scheduled_run")
+        self.assertIsNone(batch.events[0].command_id)
+
+        with self.assertRaisesRegex(ValidationError, "manual runs must reference"):
+            HubEventBatchRequestV1.model_validate({"protocol_version": "1.0", "after_sequence": 0, "events": [{**base, "trigger": "manual"}]})
+        with self.assertRaisesRegex(ValidationError, "queued run cannot report"):
+            HubEventBatchRequestV1.model_validate({"protocol_version": "1.0", "after_sequence": 0, "events": [{**base, "started_at": occurred_at}]})
+        with self.assertRaisesRegex(ValidationError, "must report finished_at"):
+            HubEventBatchRequestV1.model_validate(
+                {"protocol_version": "1.0", "after_sequence": 0, "events": [{**base, "state": "failed", "started_at": occurred_at}]}
+            )
+        terminal = HubEventBatchRequestV1.model_validate(
+            {
+                "protocol_version": "1.0",
+                "after_sequence": 0,
+                "events": [
+                    {
+                        **base,
+                        "state": "failed",
+                        "started_at": occurred_at,
+                        "finished_at": occurred_at + timedelta(seconds=3),
+                        "exit_code": 2,
+                        "log_ref": "logs/runs/attempt-1.log",
+                        "error_code": "WORKLOAD_EXIT_2",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(terminal.events[0].exit_code, 2)
+
+    def test_published_schema_stays_on_1_0_and_exposes_run_once_types(self) -> None:
+        schema = hub_protocol_json_schema()
+        self.assertEqual(schema["title"], "Orchestrator Hub Protocol v1.0")
+        operations = schema["$defs"]["HubCommandOperation"]["enum"]
+        self.assertIn("run_instance_once", operations)
+        self.assertIn("cancel_run", operations)
+        for name in ("HubRunOncePayloadV1", "HubCancelRunPayloadV1", "HubRunOnceResultV1", "HubRunCancelledResultV1", "HubScheduledRunEventV1"):
+            self.assertFalse(schema["$defs"][name]["additionalProperties"], name)
+        self.assertIn("completed", schema["$defs"]["RuntimeObservedState"]["enum"])
 
 
 if __name__ == "__main__":

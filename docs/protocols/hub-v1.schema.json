@@ -8,6 +8,27 @@
       "title": "DeploymentMode",
       "type": "string"
     },
+    "HubCancelRunPayloadV1": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "cancel_run",
+          "title": "Kind",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "run_id"
+      ],
+      "title": "HubCancelRunPayloadV1",
+      "type": "object"
+    },
     "HubCommandEventV1": {
       "additionalProperties": false,
       "properties": {
@@ -87,7 +108,9 @@
                   "instance_deleted": "#/$defs/HubOpenClawDeletedResultV1",
                   "instance_diagnosis": "#/$defs/HubOpenClawDiagnoseResultV1",
                   "instance_logs": "#/$defs/HubOpenClawLogsResultV1",
+                  "instance_run": "#/$defs/HubRunOnceResultV1",
                   "model_updated": "#/$defs/HubOpenClawModelResultV1",
+                  "run_cancelled": "#/$defs/HubRunCancelledResultV1",
                   "whatsapp_pair_started": "#/$defs/HubOpenClawPairResultV1"
                 },
                 "propertyName": "kind"
@@ -107,6 +130,12 @@
                 },
                 {
                   "$ref": "#/$defs/HubOpenClawDiagnoseResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubRunOnceResultV1"
+                },
+                {
+                  "$ref": "#/$defs/HubRunCancelledResultV1"
                 }
               ]
             },
@@ -180,8 +209,10 @@
             {
               "discriminator": {
                 "mapping": {
+                  "cancel_run": "#/$defs/HubCancelRunPayloadV1",
                   "diagnose": "#/$defs/HubOpenClawDiagnosePayloadV1",
                   "get_logs": "#/$defs/HubOpenClawLogsPayloadV1",
+                  "run_once": "#/$defs/HubRunOncePayloadV1",
                   "update_model": "#/$defs/HubOpenClawModelPayloadV1"
                 },
                 "propertyName": "kind"
@@ -195,6 +226,12 @@
                 },
                 {
                   "$ref": "#/$defs/HubOpenClawDiagnosePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubRunOncePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubCancelRunPayloadV1"
                 }
               ]
             },
@@ -304,7 +341,9 @@
         "update_instance_model",
         "get_instance_logs",
         "diagnose_instance",
-        "pair_whatsapp"
+        "pair_whatsapp",
+        "run_instance_once",
+        "cancel_run"
       ],
       "title": "HubCommandOperation",
       "type": "string"
@@ -446,8 +485,10 @@
             {
               "discriminator": {
                 "mapping": {
+                  "cancel_run": "#/$defs/HubCancelRunPayloadV1",
                   "diagnose": "#/$defs/HubOpenClawDiagnosePayloadV1",
                   "get_logs": "#/$defs/HubOpenClawLogsPayloadV1",
+                  "run_once": "#/$defs/HubRunOncePayloadV1",
                   "update_model": "#/$defs/HubOpenClawModelPayloadV1"
                 },
                 "propertyName": "kind"
@@ -461,6 +502,12 @@
                 },
                 {
                   "$ref": "#/$defs/HubOpenClawDiagnosePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubRunOncePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubCancelRunPayloadV1"
                 }
               ]
             },
@@ -660,7 +707,8 @@
             "discriminator": {
               "mapping": {
                 "command": "#/$defs/HubCommandEventV1",
-                "runtime_state": "#/$defs/HubRuntimeStateEventV1"
+                "runtime_state": "#/$defs/HubRuntimeStateEventV1",
+                "scheduled_run": "#/$defs/HubScheduledRunEventV1"
               },
               "propertyName": "type"
             },
@@ -670,6 +718,9 @@
               },
               {
                 "$ref": "#/$defs/HubRuntimeStateEventV1"
+              },
+              {
+                "$ref": "#/$defs/HubScheduledRunEventV1"
               }
             ]
           },
@@ -1493,6 +1544,161 @@
       "title": "HubOpenClawPairResultV1",
       "type": "object"
     },
+    "HubRunCancelledResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "run_cancelled",
+          "title": "Kind",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "cancelled",
+            "unknown",
+            "already_finished"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "run_id",
+        "state"
+      ],
+      "title": "HubRunCancelledResultV1",
+      "type": "object"
+    },
+    "HubRunOncePayloadV1": {
+      "additionalProperties": false,
+      "description": "Execute the instance's configured workload exactly once and exit.\n\nDeliberately carries no command line, arguments or environment: what runs is\nfixed by the instance definition on the Hub, never by the payload.",
+      "properties": {
+        "kind": {
+          "const": "run_once",
+          "title": "Kind",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "scheduled_for": {
+          "format": "date-time",
+          "title": "Scheduled For",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 900,
+          "maximum": 86400,
+          "minimum": 30,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "trigger": {
+          "enum": [
+            "schedule",
+            "manual"
+          ],
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "run_id",
+        "trigger",
+        "scheduled_for"
+      ],
+      "title": "HubRunOncePayloadV1",
+      "type": "object"
+    },
+    "HubRunOnceResultV1": {
+      "additionalProperties": false,
+      "description": "Terminal outcome of one run-once execution. `summary` must already be redacted.",
+      "properties": {
+        "exit_code": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": -255,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "finished_at": {
+          "format": "date-time",
+          "title": "Finished At",
+          "type": "string"
+        },
+        "kind": {
+          "const": "instance_run",
+          "title": "Kind",
+          "type": "string"
+        },
+        "log_ref": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^logs/runs/[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log Ref"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 2048,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "run_id",
+        "state",
+        "started_at",
+        "finished_at"
+      ],
+      "title": "HubRunOnceResultV1",
+      "type": "object"
+    },
     "HubRuntimeAdapterV1": {
       "additionalProperties": false,
       "properties": {
@@ -1754,6 +1960,173 @@
       "title": "HubRuntimeStateEventV1",
       "type": "object"
     },
+    "HubScheduledRunEventV1": {
+      "additionalProperties": false,
+      "description": "Lifecycle of one scheduled or manual run, reported by the Hub that triggered it.\n\nHub-local schedule triggers never originate from a Backend command, so this\nevent is how the Backend learns about them at all. `(instance_id,\nscheduled_for)` is the idempotency key the Backend upserts on.",
+      "properties": {
+        "command_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Id"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Z0-9][A-Z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": -255,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        },
+        "instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "log_ref": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^logs/runs/[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log Ref"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Runtime Type",
+          "type": "string"
+        },
+        "scheduled_for": {
+          "format": "date-time",
+          "title": "Scheduled For",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "trigger": {
+          "enum": [
+            "schedule",
+            "manual"
+          ],
+          "title": "Trigger",
+          "type": "string"
+        },
+        "type": {
+          "const": "scheduled_run",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "event_id",
+        "sequence",
+        "occurred_at",
+        "run_id",
+        "instance_id",
+        "runtime_type",
+        "trigger",
+        "scheduled_for",
+        "state"
+      ],
+      "title": "HubScheduledRunEventV1",
+      "type": "object"
+    },
     "RuntimeObservedState": {
       "enum": [
         "unknown",
@@ -1764,7 +2137,8 @@
         "busy",
         "degraded",
         "error",
-        "unsupported"
+        "unsupported",
+        "completed"
       ],
       "title": "RuntimeObservedState",
       "type": "string"

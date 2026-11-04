@@ -269,6 +269,8 @@ class HubProtocolContractTest(unittest.TestCase):
                 "get_instance_logs",
                 "diagnose_instance",
                 "pair_whatsapp",
+                "run_instance_once",
+                "cancel_run",
             ],
         )
         heartbeat = schema["$defs"]["HubHeartbeatRequestV1"]["properties"]

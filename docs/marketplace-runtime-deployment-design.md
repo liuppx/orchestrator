@@ -76,9 +76,11 @@ ScheduledRun
 
 这是对 Temporal 式"可恢复任务"的借鉴（见 product-architecture 市场参考），但保持单节点首期边界：持久化、幂等、lease、重试，不假设跨进程 exactly-once。
 
-## 4. 协议变更（Hub Protocol v1 → v1.1）
+## 4. 协议变更（Hub Protocol v1，additive 修订）
 
 现有 `protocols/hub_v1.py` 的 `HubCommandOperation` 全是服务型实例生命周期，`RuntimeObservedState` 也没有"任务完成"终态。需要**向后兼容地扩展**（修改 wire model 后按 ADR 要求重新 `export_hub_schema` 并更新契约测试）。
+
+> 实现决定：`protocol_version` **保持 `1.0`**，不升 1.1。新增内容全部是 additive（新枚举值、新 payload/result union 成员、新事件类型），且 Backend 只向在 heartbeat/inventory 中申报了对应 capability 的 Hub 下发 `run_instance_once`/`cancel_run`（`hubs.py` 既有能力闸门）；旧 Hub 不申报就不会收到，旧 Backend 收到未知 `scheduled_run` 事件也只是原样持久化。升版本号会迫使所有客户端同步升级，却换不来额外安全性。
 
 ### 4.1 新增命令操作
 
@@ -125,6 +127,7 @@ class HubCommandOperation(StrEnum):
 - Backend 持久化 `ScheduledRun`：queued→running→终态，退避重试到最大次数，超时清理。
 - Web：展示运行历史、单次日志、"立即运行一次"手动触发、暂停/恢复调度。
 - 先用现有 OpenClaw Adapter 验证 run-once（例如一次性诊断/脚本），再进入阶段 C 的真实 CLI。
+- 实现进度：**B1 协议契约已完成**——`run_instance_once` / `cancel_run` 操作，typed `HubRunOncePayloadV1`（不含任何命令行/参数/环境字段，运行内容由 Hub 上的实例定义决定）与 `HubCancelRunPayloadV1`，typed 结果 `HubRunOnceResultV1`（含时间线/退出码一致性校验、相对 `logs/runs/*` 日志引用、≤2 KiB 脱敏摘要）与 `HubRunCancelledResultV1`，`RuntimeObservedState.COMPLETED`，以及 Hub 本地触发上报用的 `HubScheduledRunEventV1`（`(instance_id, scheduled_for)` 为幂等键，manual 必须关联 Backend command）。两个命令模型的 payload 规则抽成共享 `validate_command_payloads`。契约测试见 `backend/tests/test_instance_deployment_mode.py::RunOnceProtocolContractTest`。B2 Hub 本地调度器、B3 Backend `ScheduledRun` 状态机、B4 Web 尚未开始。
 
 ### 阶段 C — Codex / Claude Code Adapter
 

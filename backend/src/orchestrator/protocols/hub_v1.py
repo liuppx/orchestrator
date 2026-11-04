@@ -30,6 +30,8 @@ class RuntimeObservedState(StrEnum):
     DEGRADED = "degraded"
     ERROR = "error"
     UNSUPPORTED = "unsupported"
+    # A run-once execution finished and exited; only meaningful for scheduled instances.
+    COMPLETED = "completed"
 
 
 class HubCommandOperation(StrEnum):
@@ -43,6 +45,14 @@ class HubCommandOperation(StrEnum):
     GET_INSTANCE_LOGS = "get_instance_logs"
     DIAGNOSE_INSTANCE = "diagnose_instance"
     PAIR_WHATSAPP = "pair_whatsapp"
+    # Additive since the deployment-mode revision; Hubs advertise them as capabilities.
+    RUN_INSTANCE_ONCE = "run_instance_once"
+    CANCEL_RUN = "cancel_run"
+
+
+RunTrigger = Literal["schedule", "manual"]
+RunState = Literal["queued", "running", "succeeded", "failed", "cancelled", "unknown"]
+RunLogRef = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^logs/runs/[A-Za-z0-9._-]+$")]
 
 
 class HubCommandPhase(StrEnum):
@@ -212,8 +222,33 @@ class HubOpenClawDiagnosePayloadV1(HubProtocolModel):
     auto_recover: bool = False
 
 
+class HubRunOncePayloadV1(HubProtocolModel):
+    """Execute the instance's configured workload exactly once and exit.
+
+    Deliberately carries no command line, arguments or environment: what runs is
+    fixed by the instance definition on the Hub, never by the payload.
+    """
+
+    kind: Literal["run_once"]
+    run_id: UUID
+    trigger: RunTrigger
+    scheduled_for: AwareDatetime
+    timeout_seconds: int = Field(default=900, ge=30, le=86_400)
+
+
+class HubCancelRunPayloadV1(HubProtocolModel):
+    kind: Literal["cancel_run"]
+    run_id: UUID
+
+
 HubOpenClawOperationPayloadV1 = Annotated[
-    Union[HubOpenClawModelPayloadV1, HubOpenClawLogsPayloadV1, HubOpenClawDiagnosePayloadV1],
+    Union[
+        HubOpenClawModelPayloadV1,
+        HubOpenClawLogsPayloadV1,
+        HubOpenClawDiagnosePayloadV1,
+        HubRunOncePayloadV1,
+        HubCancelRunPayloadV1,
+    ],
     Field(discriminator="kind"),
 ]
 
@@ -286,6 +321,33 @@ class HubOpenClawDiagnoseResultV1(HubProtocolModel):
     evidence: list[str] = Field(max_length=16)
 
 
+class HubRunOnceResultV1(HubProtocolModel):
+    """Terminal outcome of one run-once execution. `summary` must already be redacted."""
+
+    kind: Literal["instance_run"]
+    run_id: UUID
+    state: Literal["succeeded", "failed", "cancelled", "unknown"]
+    exit_code: int | None = Field(default=None, ge=-255, le=255)
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    log_ref: RunLogRef | None = None
+    summary: str = Field(default="", max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_timeline(self) -> HubRunOnceResultV1:
+        if self.finished_at < self.started_at:
+            raise ValueError("finished_at must not be earlier than started_at")
+        if self.state == "succeeded" and self.exit_code not in (None, 0):
+            raise ValueError("a succeeded run cannot report a non-zero exit_code")
+        return self
+
+
+class HubRunCancelledResultV1(HubProtocolModel):
+    kind: Literal["run_cancelled"]
+    run_id: UUID
+    state: Literal["cancelled", "unknown", "already_finished"]
+
+
 HubCommandResultV1 = Annotated[
     Union[
         HubOpenClawDeletedResultV1,
@@ -293,6 +355,8 @@ HubCommandResultV1 = Annotated[
         HubOpenClawPairResultV1,
         HubOpenClawLogsResultV1,
         HubOpenClawDiagnoseResultV1,
+        HubRunOnceResultV1,
+        HubRunCancelledResultV1,
     ],
     Field(discriminator="kind"),
 ]
@@ -306,7 +370,45 @@ def expected_result_kind(operation: HubCommandOperation) -> str | None:
         HubCommandOperation.GET_INSTANCE_LOGS: "instance_logs",
         HubCommandOperation.DIAGNOSE_INSTANCE: "instance_diagnosis",
         HubCommandOperation.PAIR_WHATSAPP: "whatsapp_pair_started",
+        HubCommandOperation.RUN_INSTANCE_ONCE: "instance_run",
+        HubCommandOperation.CANCEL_RUN: "run_cancelled",
     }.get(operation)
+
+
+_OPERATIONS_REQUIRING_PAYLOAD = {
+    HubCommandOperation.UPDATE_INSTANCE_MODEL,
+    HubCommandOperation.GET_INSTANCE_LOGS,
+    HubCommandOperation.DIAGNOSE_INSTANCE,
+    HubCommandOperation.RUN_INSTANCE_ONCE,
+    HubCommandOperation.CANCEL_RUN,
+}
+_EXPECTED_PAYLOAD_KIND = {
+    HubCommandOperation.UPDATE_INSTANCE_MODEL: "update_model",
+    HubCommandOperation.GET_INSTANCE_LOGS: "get_logs",
+    HubCommandOperation.DIAGNOSE_INSTANCE: "diagnose",
+    HubCommandOperation.RUN_INSTANCE_ONCE: "run_once",
+    HubCommandOperation.CANCEL_RUN: "cancel_run",
+}
+
+
+def validate_command_payloads(
+    operation: HubCommandOperation,
+    runtime_type: str,
+    create_payload: HubOpenClawCreatePayloadV1 | None,
+    operation_payload: object | None,
+) -> None:
+    """Shared payload rules for issued and polled commands."""
+    if (operation == HubCommandOperation.CREATE_INSTANCE) != (create_payload is not None):
+        raise ValueError("create_payload must be present only for create_instance commands")
+    if (operation in _OPERATIONS_REQUIRING_PAYLOAD) != (operation_payload is not None):
+        raise ValueError("operation_payload must be present only for operations that require parameters")
+    if operation == HubCommandOperation.CREATE_INSTANCE and runtime_type != "openclaw":
+        raise ValueError("create_instance is currently supported only for OpenClaw")
+    if operation_payload is not None and runtime_type != "openclaw":
+        raise ValueError("operation_payload is currently supported only for OpenClaw")
+    expected_kind = _EXPECTED_PAYLOAD_KIND.get(operation)
+    if expected_kind and operation_payload is not None and getattr(operation_payload, "kind", None) != expected_kind:
+        raise ValueError("operation_payload kind does not match the command operation")
 
 
 class HubCommandV1(HubProtocolModel):
@@ -326,25 +428,7 @@ class HubCommandV1(HubProtocolModel):
     def validate_expiration(self) -> HubCommandV1:
         if self.expires_at <= self.issued_at:
             raise ValueError("expires_at must be later than issued_at")
-        if (self.operation == HubCommandOperation.CREATE_INSTANCE) != (self.create_payload is not None):
-            raise ValueError("create_payload must be present only for create_instance commands")
-        if (self.operation in {
-            HubCommandOperation.UPDATE_INSTANCE_MODEL,
-            HubCommandOperation.GET_INSTANCE_LOGS,
-            HubCommandOperation.DIAGNOSE_INSTANCE,
-        }) != (self.operation_payload is not None):
-            raise ValueError("operation_payload must be present only for operations that require parameters")
-        if self.operation == HubCommandOperation.CREATE_INSTANCE and self.runtime_type != "openclaw":
-            raise ValueError("create_instance is currently supported only for OpenClaw")
-        if self.operation_payload is not None and self.runtime_type != "openclaw":
-            raise ValueError("operation_payload is currently supported only for OpenClaw")
-        expected_kind = {
-            HubCommandOperation.UPDATE_INSTANCE_MODEL: "update_model",
-            HubCommandOperation.GET_INSTANCE_LOGS: "get_logs",
-            HubCommandOperation.DIAGNOSE_INSTANCE: "diagnose",
-        }.get(self.operation)
-        if expected_kind and self.operation_payload and self.operation_payload.kind != expected_kind:
-            raise ValueError("operation_payload kind does not match the command operation")
+        validate_command_payloads(self.operation, self.runtime_type, self.create_payload, self.operation_payload)
         return self
 
 
@@ -361,25 +445,7 @@ class HubCommandIssueRequestV1(HubProtocolModel):
 
     @model_validator(mode="after")
     def validate_operation_payload(self) -> HubCommandIssueRequestV1:
-        if (self.operation == HubCommandOperation.CREATE_INSTANCE) != (self.create_payload is not None):
-            raise ValueError("create_payload must be present only for create_instance commands")
-        if (self.operation in {
-            HubCommandOperation.UPDATE_INSTANCE_MODEL,
-            HubCommandOperation.GET_INSTANCE_LOGS,
-            HubCommandOperation.DIAGNOSE_INSTANCE,
-        }) != (self.operation_payload is not None):
-            raise ValueError("operation_payload must be present only for operations that require parameters")
-        if self.operation == HubCommandOperation.CREATE_INSTANCE and self.runtime_type != "openclaw":
-            raise ValueError("create_instance is currently supported only for OpenClaw")
-        if self.operation_payload is not None and self.runtime_type != "openclaw":
-            raise ValueError("operation_payload is currently supported only for OpenClaw")
-        expected_kind = {
-            HubCommandOperation.UPDATE_INSTANCE_MODEL: "update_model",
-            HubCommandOperation.GET_INSTANCE_LOGS: "get_logs",
-            HubCommandOperation.DIAGNOSE_INSTANCE: "diagnose",
-        }.get(self.operation)
-        if expected_kind and self.operation_payload and self.operation_payload.kind != expected_kind:
-            raise ValueError("operation_payload kind does not match the command operation")
+        validate_command_payloads(self.operation, self.runtime_type, self.create_payload, self.operation_payload)
         return self
 
 
@@ -461,7 +527,47 @@ class HubRuntimeStateEventV1(HubProtocolModel):
     desired_revision: int | None = Field(default=None, ge=1)
 
 
-HubEventV1 = Annotated[Union[HubCommandEventV1, HubRuntimeStateEventV1], Field(discriminator="type")]
+class HubScheduledRunEventV1(HubProtocolModel):
+    """Lifecycle of one scheduled or manual run, reported by the Hub that triggered it.
+
+    Hub-local schedule triggers never originate from a Backend command, so this
+    event is how the Backend learns about them at all. `(instance_id,
+    scheduled_for)` is the idempotency key the Backend upserts on.
+    """
+
+    type: Literal["scheduled_run"]
+    event_id: UUID
+    sequence: int = Field(ge=1)
+    occurred_at: AwareDatetime
+    run_id: UUID
+    instance_id: InstanceId
+    runtime_type: RuntimeType
+    trigger: RunTrigger
+    scheduled_for: AwareDatetime
+    state: RunState
+    command_id: UUID | None = None
+    started_at: AwareDatetime | None = None
+    finished_at: AwareDatetime | None = None
+    exit_code: int | None = Field(default=None, ge=-255, le=255)
+    log_ref: RunLogRef | None = None
+    error_code: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Z0-9][A-Z0-9_-]*$")
+
+    @model_validator(mode="after")
+    def validate_state_fields(self) -> HubScheduledRunEventV1:
+        terminal = self.state in {"succeeded", "failed", "cancelled", "unknown"}
+        if terminal and self.started_at is not None and self.finished_at is None:
+            raise ValueError("a run that started must report finished_at once it reaches a terminal state")
+        if self.state == "queued" and (self.started_at or self.finished_at or self.exit_code is not None):
+            raise ValueError("a queued run cannot report execution fields")
+        if self.trigger == "manual" and self.command_id is None:
+            raise ValueError("manual runs must reference the Backend command that requested them")
+        return self
+
+
+HubEventV1 = Annotated[
+    Union[HubCommandEventV1, HubRuntimeStateEventV1, HubScheduledRunEventV1],
+    Field(discriminator="type"),
+]
 
 
 class HubEventBatchRequestV1(HubProtocolModel):
