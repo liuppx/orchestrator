@@ -34,9 +34,9 @@ FAKE_CODEX = textwrap.dedent(
     #!{sys.executable}
     import json, os, sys, time
     argv = sys.argv[1:]
-    (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
     if argv == ["--version"]:
         print("codex-cli 0.0.0-fake"); sys.exit(0)
+    (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
     prompt = argv[-1]
     out = argv[argv.index("-o") + 1]
     if "SLEEP" in prompt:
@@ -55,9 +55,9 @@ FAKE_CLAUDE = textwrap.dedent(
     #!{sys.executable}
     import json, os, sys, time
     argv = sys.argv[1:]
-    (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
     if argv == ["--version"]:
         print("0.0.0-fake (Claude Code)"); sys.exit(0)
+    (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
     prompt = argv[argv.index("-p") + 1]
     if "SLEEP" in prompt:
         time.sleep(60)
