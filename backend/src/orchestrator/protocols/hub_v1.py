@@ -224,6 +224,11 @@ class HubCliTaskCreatePayloadV1(HubProtocolModel):
     never per-run input. Execution policy is part of the definition too, and the
     bypass modes of either CLI are deliberately not representable here. A CLI
     task has no resident form, so it is always a scheduled instance.
+
+    `model_api_key_envelope` carries a model-provider credential encrypted to the
+    target Hub's key, exactly like the DingTalk client secret. The plaintext never
+    travels in a command, and a signed marketplace artifact cannot set it: the
+    manifest fields that build this payload do not include it.
     """
 
     kind: Literal["cli_task"]
@@ -235,6 +240,7 @@ class HubCliTaskCreatePayloadV1(HubProtocolModel):
     run_timeout_seconds: int = Field(default=900, ge=30, le=86_400)
     deployment_mode: DeploymentMode = DeploymentMode.SCHEDULED
     schedule: HubInstanceScheduleV1 | None = None
+    model_api_key_envelope: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def validate_definition(self) -> HubCliTaskCreatePayloadV1:

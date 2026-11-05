@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from orchestrator.protocols.hub_v1 import (
     DeploymentMode,
     HubCancelRunPayloadV1,
@@ -108,11 +110,13 @@ class CliTaskAdapter:
         *,
         binary: str | Path | None = None,
         termination_grace_seconds: float = 3.0,
+        secret_encryption_key: str | None = None,
     ):
         self.store = CliInstanceStore(Path(state_file))
         self.instances_root = Path(instances_root)
         self._binary = str(binary) if binary else shutil.which(self.binary_name)
         self.termination_grace_seconds = termination_grace_seconds
+        self.secret_encryption_key = secret_encryption_key
         self._version_cache: str | None | bool = False
 
     # --- discovery ----------------------------------------------------------------
@@ -247,6 +251,32 @@ class CliTaskAdapter:
 
     # --- instance definition ------------------------------------------------------
 
+    def _secret_path(self, raw: dict[str, Any]) -> Path:
+        return Path(str(raw["root_dir"])) / "secrets" / "model_api_key"
+
+    def _store_model_api_key(self, raw: dict[str, Any], api_key: str) -> None:
+        """Keep the model credential in this instance's own 0600 file, never in the state JSON."""
+        path = self._secret_path(raw)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(api_key, encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+
+    def _read_model_api_key(self, raw: dict[str, Any]) -> str | None:
+        path = self._secret_path(raw)
+        if not path.is_file():
+            return None
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return value or None
+
     def _create(self, command: HubCommandV1) -> AdapterExecution:
         payload = command.create_payload
         if not isinstance(payload, HubCliTaskCreatePayloadV1):
@@ -283,6 +313,19 @@ class CliTaskAdapter:
             "created_at": now,
             "updated_at": now,
         }
+        if payload.model_api_key_envelope:
+            if not self.secret_encryption_key:
+                return AdapterExecution(False, RuntimeObservedState.ERROR, "SECRET_DECRYPTION_UNAVAILABLE")
+            try:
+                api_key = Fernet(self.secret_encryption_key.encode("ascii")).decrypt(
+                    payload.model_api_key_envelope.encode("ascii")
+                ).decode("utf-8")
+            except (ValueError, UnicodeError, InvalidToken):
+                return AdapterExecution(False, RuntimeObservedState.ERROR, "SECRET_DECRYPTION_FAILED")
+            if not api_key.strip():
+                return AdapterExecution(False, RuntimeObservedState.ERROR, "SECRET_DECRYPTION_FAILED")
+            self._store_model_api_key(raw, api_key)
+            raw["model_credential_configured"] = True
         self.store.update(lambda instances: instances.__setitem__(instance_id, raw))
         return AdapterExecution(True, RuntimeObservedState.STOPPED, progress_percent=100)
 
@@ -308,16 +351,20 @@ class CliTaskAdapter:
         """Return (succeeded, summary) for a finished process. Subclasses refine with CLI-specific output."""
         return exit_code == 0, (stdout.strip() or stderr.strip())[-SUMMARY_LIMIT:]
 
-    def build_env(self) -> dict[str, str]:
+    def build_env(self, raw: dict[str, Any]) -> dict[str, str]:
         # Inherit the Hub user's environment so the machine's existing CLI login is used.
         return dict(os.environ)
 
-    def _redact(self, text: str) -> str:
+    def _redact(self, text: str, raw: dict[str, Any] | None = None) -> str:
         if not text:
             return ""
         for key, value in os.environ.items():
             if value and len(value) >= 8 and _SECRET_ENV.search(key):
                 text = text.replace(value, f"<{key}>")
+        if raw is not None:
+            api_key = self._read_model_api_key(raw)
+            if api_key and len(api_key) >= 8:
+                text = text.replace(api_key, "<model_api_key>")
         return text
 
     def _run_timeout_seconds(self, raw: dict[str, Any]) -> float:
@@ -347,11 +394,12 @@ class CliTaskAdapter:
             f"runtime={self.runtime_type} {self.runtime_version()}",
             f"policy={raw.get('policy')}",
             f"model={raw.get('model') or '(default)'}",
-            f"argv={self._describe_argv(argv)}",
+            # The argv carries the prompt, so it is redacted like any other output.
+            f"argv={self._redact(self._describe_argv(argv), raw)}",
             f"started_at={started_at.isoformat()}",
         ]
         try:
-            exit_code, stdout, stderr, timed_out = self._run_process(argv, workspace, min(self._run_timeout_seconds(raw), payload.timeout_seconds), context)
+            exit_code, stdout, stderr, timed_out = self._run_process(argv, workspace, min(self._run_timeout_seconds(raw), payload.timeout_seconds), context, raw)
         except AdapterExecutionUncertain:
             self._write_log(logs_dir / log_name, [*header, "state=unknown", "error=cancelled before completion"])
             self._update(instance_id, status="error", last_run={"run_id": str(payload.run_id), "state": "unknown"})
@@ -361,7 +409,7 @@ class CliTaskAdapter:
             succeeded, summary = False, f"run exceeded {self._run_timeout_seconds(raw):g}s timeout and was terminated"
         else:
             succeeded, summary = self.parse_outcome(exit_code, stdout, stderr, output_path)
-        summary = self._redact(summary)[:SUMMARY_LIMIT]
+        summary = self._redact(summary, raw)[:SUMMARY_LIMIT]
         self._write_log(
             logs_dir / log_name,
             [
@@ -372,9 +420,9 @@ class CliTaskAdapter:
                 "----- summary -----",
                 summary,
                 "----- stderr (tail) -----",
-                self._redact(stderr)[-LOG_TAIL_LIMIT:],
+                self._redact(stderr, raw)[-LOG_TAIL_LIMIT:],
                 "----- stdout (tail) -----",
-                self._redact(stdout)[-LOG_TAIL_LIMIT:],
+                self._redact(stdout, raw)[-LOG_TAIL_LIMIT:],
             ],
         )
         self._update(
@@ -410,7 +458,6 @@ class CliTaskAdapter:
         # The prompt is the last argument and may be long; keep the log readable.
         shown = [*argv[:-1], (argv[-1][:80] + "…") if len(argv[-1]) > 80 else argv[-1]] if argv else []
         return json.dumps(shown, ensure_ascii=False)
-
     @staticmethod
     def _write_log(path: Path, lines: list[str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -437,13 +484,14 @@ class CliTaskAdapter:
         cwd: Path,
         timeout_seconds: float,
         context: AdapterExecutionContext,
+        raw: dict[str, Any],
     ) -> tuple[int, str, str, bool]:
         """Run the CLI in its own process group; cancel and timeout terminate the whole group."""
         context.raise_if_cancelled()
         process = subprocess.Popen(
             argv,
             cwd=str(cwd),
-            env=self.build_env(),
+            env=self.build_env(raw),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -480,10 +528,52 @@ class CodexAdapter(CliTaskAdapter):
     @classmethod
     def from_settings(cls, settings: "Settings") -> "CodexAdapter":
         root = settings.resolved_hub_client_dir
-        return cls(root / "codex-state.json", root / "codex-instances", binary=settings.hub_codex_bin)
+        return cls(
+            root / "codex-state.json",
+            root / "codex-instances",
+            binary=settings.hub_codex_bin,
+            secret_encryption_key=settings.hub_command_encryption_key,
+        )
 
     def policy_from_payload(self, payload: HubCliTaskCreatePayloadV1) -> str:
         return payload.codex_sandbox or "read-only"
+
+    def build_env(self, raw: dict[str, Any]) -> dict[str, str]:
+        env = super().build_env(raw)
+        api_key = self._read_model_api_key(raw)
+        if not api_key:
+            # Without a configured credential the machine's own Codex login is used.
+            env.pop("CODEX_HOME", None)
+            return env
+        # Codex ignores OPENAI_API_KEY: it authenticates from $CODEX_HOME/auth.json.
+        # Give this instance its own CODEX_HOME so the credential never touches the
+        # machine's login, and keep the machine's config.toml for provider settings.
+        home = Path(str(raw["root_dir"])) / "codex-home"
+        home.mkdir(parents=True, exist_ok=True)
+        try:
+            home.chmod(0o700)
+        except OSError:
+            pass
+        auth_path = home / "auth.json"
+        temporary = auth_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": api_key}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        temporary.replace(auth_path)
+        source_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+        for name in ("config.toml", "installation_id"):
+            source = source_home / name
+            target = home / name
+            if source.is_file() and not target.exists():
+                shutil.copy2(source, target)
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
+        env["CODEX_HOME"] = str(home)
+        return env
 
     def build_run_command(self, raw: dict[str, Any], output_path: Path) -> list[str]:
         assert self._binary
@@ -550,10 +640,25 @@ class ClaudeCodeAdapter(CliTaskAdapter):
     @classmethod
     def from_settings(cls, settings: "Settings") -> "ClaudeCodeAdapter":
         root = settings.resolved_hub_client_dir
-        return cls(root / "claude-code-state.json", root / "claude-code-instances", binary=settings.hub_claude_code_bin)
+        return cls(
+            root / "claude-code-state.json",
+            root / "claude-code-instances",
+            binary=settings.hub_claude_code_bin,
+            secret_encryption_key=settings.hub_command_encryption_key,
+        )
 
     def policy_from_payload(self, payload: HubCliTaskCreatePayloadV1) -> str:
         return payload.claude_permission_mode or "plan"
+
+    def build_env(self, raw: dict[str, Any]) -> dict[str, str]:
+        env = super().build_env(raw)
+        api_key = self._read_model_api_key(raw)
+        if api_key:
+            # Claude Code reads ANTHROPIC_API_KEY strictly; it overrides any stored login.
+            env["ANTHROPIC_API_KEY"] = api_key
+            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+            env.pop("ANTHROPIC_BASE_URL", None)
+        return env
 
     def build_run_command(self, raw: dict[str, Any], output_path: Path) -> list[str]:
         assert self._binary

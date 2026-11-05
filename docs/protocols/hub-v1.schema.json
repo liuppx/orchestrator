@@ -31,7 +31,7 @@
     },
     "HubCliTaskCreatePayloadV1": {
       "additionalProperties": false,
-      "description": "Create a one-shot CLI agent task instance (Codex CLI or Claude Code CLI).\n\nThe prompt is the instance definition \u2014 the fixed task every run executes \u2014\nnever per-run input. Execution policy is part of the definition too, and the\nbypass modes of either CLI are deliberately not representable here. A CLI\ntask has no resident form, so it is always a scheduled instance.",
+      "description": "Create a one-shot CLI agent task instance (Codex CLI or Claude Code CLI).\n\nThe prompt is the instance definition \u2014 the fixed task every run executes \u2014\nnever per-run input. Execution policy is part of the definition too, and the\nbypass modes of either CLI are deliberately not representable here. A CLI\ntask has no resident form, so it is always a scheduled instance.\n\n`model_api_key_envelope` carries a model-provider credential encrypted to the\ntarget Hub's key, exactly like the DingTalk client secret. The plaintext never\ntravels in a command, and a signed marketplace artifact cannot set it: the\nmanifest fields that build this payload do not include it.",
       "properties": {
         "claude_permission_mode": {
           "anyOf": [
@@ -87,6 +87,20 @@
           ],
           "default": null,
           "title": "Model"
+        },
+        "model_api_key_envelope": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Api Key Envelope"
         },
         "name": {
           "maxLength": 128,

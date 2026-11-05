@@ -1031,7 +1031,7 @@ class PublicAuthApiTest(unittest.TestCase):
         instance_id = created["id"]
         self.assertTrue(instance_id.startswith("codex-"))
         self.assertEqual((created["runtime_type"], created["workload_type"], created["deployment_mode"]), ("codex", "cli_task", "scheduled"))
-        self.assertEqual(created["task"], {"prompt": "Say OK", "policy": "workspace-write", "run_timeout_seconds": 60})
+        self.assertEqual(created["task"], {"prompt": "Say OK", "policy": "workspace-write", "run_timeout_seconds": 60, "model_credential_configured": False})
         self.assertEqual(created["endpoint"], "")
         self.assertEqual(created["desired_state"], "stopped")
         for capability in ("start", "stop", "run-once"):

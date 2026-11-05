@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -37,6 +38,10 @@ FAKE_CODEX = textwrap.dedent(
     if argv == ["--version"]:
         print("codex-cli 0.0.0-fake"); sys.exit(0)
     (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
+    (open(os.path.join(os.getcwd(), "env.json"), "w")).write(json.dumps({{
+        "CODEX_HOME": os.environ.get("CODEX_HOME"),
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
+    }}))
     prompt = argv[-1]
     out = argv[argv.index("-o") + 1]
     if "SLEEP" in prompt:
@@ -58,6 +63,10 @@ FAKE_CLAUDE = textwrap.dedent(
     if argv == ["--version"]:
         print("0.0.0-fake (Claude Code)"); sys.exit(0)
     (open(os.path.join(os.getcwd(), "argv.json"), "w")).write(json.dumps(argv))
+    (open(os.path.join(os.getcwd(), "env.json"), "w")).write(json.dumps({{
+        "CODEX_HOME": os.environ.get("CODEX_HOME"),
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
+    }}))
     prompt = argv[argv.index("-p") + 1]
     if "SLEEP" in prompt:
         time.sleep(60)
@@ -178,6 +187,13 @@ class CliAdapterTestBase(unittest.TestCase):
         import json
 
         return json.loads((workspace / "argv.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def recorded_env(adapter, instance_id: str) -> dict:
+        workspace = Path(adapter.store.load()[instance_id]["workspace_dir"])
+        import json
+
+        return json.loads((workspace / "env.json").read_text(encoding="utf-8"))
 
 
 class CliAdapterTest(CliAdapterTestBase):
@@ -328,6 +344,149 @@ class CliSchedulerIntegrationTest(CliAdapterTestBase):
         self.assertTrue(run_events[-1]["log_ref"].startswith("logs/runs/"))
         latest = transport.inventory_snapshots[max(transport.inventory_snapshots)]["instances"][0]
         self.assertEqual((latest["runtime_type"], latest["observed_state"]), ("codex", "completed"))
+
+
+class ModelCredentialTest(CliAdapterTestBase):
+    """Credentials travel encrypted to the Hub and are used the way each CLI actually reads them."""
+
+    KEY = "sk-secret-model-key-000111"
+
+    def envelope(self, key: str) -> str:
+        from cryptography.fernet import Fernet
+
+        cipher = Fernet(self.fernet_key.encode("ascii"))
+        return cipher.encrypt(key.encode("utf-8")).decode("ascii")
+
+    def setUp(self) -> None:
+        super().setUp()
+        from cryptography.fernet import Fernet
+
+        self.fernet_key = Fernet.generate_key().decode("ascii")
+
+    def codex(self) -> CodexAdapter:
+        return CodexAdapter(
+            self.root / "codex-state.json",
+            self.root / "codex-instances",
+            binary=self.codex_bin,
+            termination_grace_seconds=0.5,
+            secret_encryption_key=self.fernet_key,
+        )
+
+    def claude(self) -> ClaudeCodeAdapter:
+        return ClaudeCodeAdapter(
+            self.root / "claude-state.json",
+            self.root / "claude-instances",
+            binary=self.claude_bin,
+            termination_grace_seconds=0.5,
+            secret_encryption_key=self.fernet_key,
+        )
+
+    def create_with_key(self, adapter, runtime_type: str, instance_id: str, key: str | None):
+        payload = HubCliTaskCreatePayloadV1(
+            kind="cli_task",
+            name="Task",
+            prompt="Say OK",
+            schedule=HubInstanceScheduleV1(kind="interval", seconds=60),
+            model_api_key_envelope=self.envelope(key) if key else None,
+        )
+        return adapter.execute(
+            HubCommandV1(
+                command_id=uuid4(),
+                target_instance_id=instance_id,
+                runtime_type=runtime_type,
+                operation=HubCommandOperation.CREATE_INSTANCE,
+                desired_revision=1,
+                attempt=1,
+                trace_id="credential",
+                issued_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                create_payload=payload,
+            ),
+            AdapterExecutionContext(),
+        )
+
+    def test_codex_gets_a_private_codex_home_holding_the_key(self) -> None:
+        adapter = self.codex()
+        created = self.create_with_key(adapter, "codex", "task-key", self.KEY)
+        self.assertTrue(created.success)
+        raw = adapter.store.load()["task-key"]
+        secret_path = Path(raw["root_dir"]) / "secrets" / "model_api_key"
+        self.assertTrue(secret_path.is_file())
+        self.assertEqual(secret_path.read_text(encoding="utf-8"), self.KEY)
+        self.assertEqual(secret_path.stat().st_mode & 0o777, 0o600)
+        # The credential never lands in the readable state file.
+        self.assertNotIn(self.KEY, json.dumps(raw))
+        self.assertTrue(raw["model_credential_configured"])
+
+        self.assertTrue(adapter.execute(_run_command("codex", "task-key"), AdapterExecutionContext()).success)
+        env = self.recorded_env(adapter, "task-key")
+        home = Path(env["CODEX_HOME"])
+        self.assertNotEqual(home, Path.home() / ".codex")
+        self.assertTrue((home / "auth.json").is_file())
+        auth = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(auth["auth_mode"], "apikey")
+        self.assertEqual(auth["OPENAI_API_KEY"], self.KEY)
+        self.assertEqual((home / "auth.json").stat().st_mode & 0o777, 0o600)
+        self.assertIsNone(env["ANTHROPIC_API_KEY"])
+
+    def test_claude_receives_the_key_in_the_environment_it_reads(self) -> None:
+        adapter = self.claude()
+        self.assertTrue(self.create_with_key(adapter, "claude-code", "task-key", self.KEY).success)
+        self.assertTrue(adapter.execute(_run_command("claude-code", "task-key"), AdapterExecutionContext()).success)
+        env = self.recorded_env(adapter, "task-key")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], self.KEY)
+        self.assertIsNone(env["CODEX_HOME"])
+
+    def test_without_a_key_the_machine_login_is_used_untouched(self) -> None:
+        adapter = self.codex()
+        self.assertTrue(self.create_with_key(adapter, "codex", "task-plain", None).success)
+        raw = adapter.store.load()["task-plain"]
+        self.assertFalse(raw.get("model_credential_configured"))
+        self.assertFalse((Path(raw["root_dir"]) / "secrets" / "model_api_key").exists())
+        self.assertTrue(adapter.execute(_run_command("codex", "task-plain"), AdapterExecutionContext()).success)
+        self.assertIsNone(self.recorded_env(adapter, "task-plain")["CODEX_HOME"])
+
+        claude = self.claude()
+        self.assertTrue(self.create_with_key(claude, "claude-code", "task-plain", None).success)
+        self.assertTrue(claude.execute(_run_command("claude-code", "task-plain"), AdapterExecutionContext()).success)
+        self.assertIsNone(self.recorded_env(claude, "task-plain")["ANTHROPIC_API_KEY"])
+
+    def test_a_corrupt_envelope_is_rejected_without_storing_anything(self) -> None:
+        adapter = self.codex()
+        payload = HubCliTaskCreatePayloadV1(
+            kind="cli_task",
+            name="Task",
+            prompt="Say OK",
+            schedule=HubInstanceScheduleV1(kind="interval", seconds=60),
+            model_api_key_envelope="gAAAAA-not-a-valid-envelope",
+        )
+        execution = adapter.execute(
+            HubCommandV1(
+                command_id=uuid4(),
+                target_instance_id="task-bad",
+                runtime_type="codex",
+                operation=HubCommandOperation.CREATE_INSTANCE,
+                desired_revision=1,
+                attempt=1,
+                trace_id="credential",
+                issued_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                create_payload=payload,
+            ),
+            AdapterExecutionContext(),
+        )
+        self.assertFalse(execution.success)
+        self.assertEqual(execution.error_code, "SECRET_DECRYPTION_FAILED")
+        self.assertNotIn("task-bad", adapter.store.load())
+
+    def test_the_key_is_redacted_from_summaries_and_logs(self) -> None:
+        adapter = self.claude()
+        self.assertTrue(self.create_with_key(adapter, "claude-code", "task-leak", self.KEY).success)
+        adapter._update("task-leak", prompt=f"use key {self.KEY} please")
+        run = adapter.execute(_run_command("claude-code", "task-leak"), AdapterExecutionContext())
+        self.assertNotIn(self.KEY, run.result.summary)
+        log = Path(adapter.store.load()["task-leak"]["logs_dir"]) / "runs" / f"{run.result.run_id}.log"
+        self.assertNotIn(self.KEY, log.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

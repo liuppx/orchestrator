@@ -430,6 +430,19 @@ async def create_cli_task_instance_via_hub(
     try:
         if not hub_service.is_online(settings.hub_id):
             raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        encrypted_secret = None
+        if payload.task.model_api_key:
+            hub_encryption_key = settings.parsed_hub_command_encryption_keys.get(settings.hub_id)
+            if not hub_encryption_key:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"HUB_COMMAND_ENCRYPTION_KEYS has no key for Hub '{settings.hub_id}'",
+                )
+            try:
+                cipher = Fernet(hub_encryption_key.encode("ascii"))
+            except (ValueError, UnicodeError) as exc:
+                raise HTTPException(status_code=503, detail="HUB_COMMAND_ENCRYPTION_KEY is invalid") from exc
+            encrypted_secret = cipher.encrypt(payload.task.model_api_key.encode("utf-8")).decode("ascii")
         instance_id = f"{payload.runtime_type}-{uuid4().hex}"
         command_request = HubCommandIssueRequestV1(
             target_instance_id=instance_id,
@@ -448,6 +461,7 @@ async def create_cli_task_instance_via_hub(
                 claude_permission_mode=payload.task.claude_permission_mode,
                 run_timeout_seconds=payload.task.run_timeout_seconds,
                 schedule=HubInstanceScheduleV1.model_validate(payload.schedule.model_dump(mode="json")),
+                model_api_key_envelope=encrypted_secret,
             ),
         )
         receipt = hub_service.issue_command(

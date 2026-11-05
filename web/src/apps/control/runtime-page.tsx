@@ -284,6 +284,7 @@ export function RuntimePage() {
             {selected.endpoint ? <div><span>本机地址</span><code>{selected.endpoint}</code></div> : null}
             {selected.runtime_type === 'openclaw' ? <div><span>诊断建议</span><strong>{diagnoseQuery.data?.recommended_action || (diagnoseQuery.isLoading ? '检查中…' : '暂无')}</strong></div> : null}
             {selected.task ? <div><span>执行策略</span><strong>{selected.task.policy ?? '默认'} · 超时 {Math.round(selected.task.run_timeout_seconds / 60)} 分钟</strong></div> : null}
+            {selected.task ? <div><span>模型凭证</span><strong>{selected.task.model_credential_configured ? '已配置（存于实例本机）' : '使用本机 CLI 登录'}</strong></div> : null}
           </div>
           {selected.task ? (
             <>

@@ -282,12 +282,15 @@ class CliTaskSpec(BaseModel):
     codex_sandbox: Literal["read-only", "workspace-write"] | None = None
     claude_permission_mode: Literal["plan", "acceptEdits", "dontAsk"] | None = None
     run_timeout_seconds: int = Field(default=900, ge=30, le=86_400)
+    # Plaintext model-provider credential; encrypted to the target Hub before it leaves the Backend.
+    model_api_key: str | None = Field(default=None, min_length=1, max_length=1024)
 
 
 class CliTaskView(BaseModel):
     prompt: str
     policy: str | None
     run_timeout_seconds: int
+    model_credential_configured: bool = False
 
 
 class RuntimeInstanceView(BaseModel):

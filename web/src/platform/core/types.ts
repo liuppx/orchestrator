@@ -173,6 +173,7 @@ export type CliTaskView = {
   prompt: string
   policy: string | null
   run_timeout_seconds: number
+  model_credential_configured: boolean
 }
 
 export type CliTaskSpec = {
@@ -180,6 +181,7 @@ export type CliTaskSpec = {
   codex_sandbox?: 'read-only' | 'workspace-write' | null
   claude_permission_mode?: 'plan' | 'acceptEdits' | 'dontAsk' | null
   run_timeout_seconds?: number
+  model_api_key?: string | null
 }
 
 export type RuntimeInstanceCreateRequest = BotInstanceCreateRequest & {

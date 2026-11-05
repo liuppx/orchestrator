@@ -15,6 +15,7 @@ type TaskForm = {
   prompt: string
   policy: string
   model: string
+  model_api_key: string
   schedule_kind: 'cron' | 'interval'
   schedule_expr: string
   schedule_minutes: string
@@ -51,6 +52,8 @@ function buildTask(values: TaskForm): CliTaskSpec {
   const task: CliTaskSpec = { prompt: values.prompt.trim(), run_timeout_seconds: Math.round(Number(values.timeout_minutes) * 60) }
   if (values.runtime_type === 'codex') task.codex_sandbox = values.policy as CliTaskSpec['codex_sandbox']
   else task.claude_permission_mode = values.policy as CliTaskSpec['claude_permission_mode']
+  // Left empty, the machine's existing CLI login is used.
+  task.model_api_key = values.model_api_key.trim() || null
   return task
 }
 
@@ -67,6 +70,7 @@ export function CreateTaskPanel() {
       prompt: '',
       policy: 'read-only',
       model: '',
+      model_api_key: '',
       schedule_kind: 'cron',
       schedule_expr: '0 9 * * 1-5',
       schedule_minutes: '60',
@@ -137,6 +141,10 @@ export function CreateTaskPanel() {
             <div className="grid gap-2">
               <label htmlFor="task-model" className="text-sm font-medium text-slate-700">模型（可选）</label>
               <Input id="task-model" {...form.register('model')} placeholder="留空使用 CLI 默认模型" />
+            </div>
+            <div className="grid gap-2 md:col-span-2 xl:col-span-4">
+              <label htmlFor="task-model-key" className="text-sm font-medium text-slate-700">模型 API Key（可选）</label>
+              <Input id="task-model-key" type="password" autoComplete="off" {...form.register('model_api_key')} placeholder="留空则使用本机已有的 CLI 登录；填写后加密发给该机器 Hub，仅存于该实例的 0600 文件" />
             </div>
             <div className="grid gap-2 md:col-span-2 xl:col-span-4">
               <label htmlFor="task-prompt" className="text-sm font-medium text-slate-700">任务提示词</label>

@@ -380,6 +380,8 @@ class MachineHubService:
                             "codex_sandbox": create_payload.codex_sandbox,
                             "claude_permission_mode": create_payload.claude_permission_mode,
                             "run_timeout_seconds": create_payload.run_timeout_seconds,
+                            # Only the fact that a credential was supplied is stored, never its value.
+                            "model_credential_configured": bool(create_payload.model_api_key_envelope),
                         }
                         catalog_kind = "cli_task"
                         profile_ref = f"{request.runtime_type}-task://{request.target_instance_id}"
@@ -669,6 +671,7 @@ class MachineHubService:
                 "prompt": str(config.get("prompt") or ""),
                 "policy": config.get("codex_sandbox") or config.get("claude_permission_mode"),
                 "run_timeout_seconds": int(config.get("run_timeout_seconds") or 900),
+                "model_credential_configured": bool(config.get("model_credential_configured")),
             }
         return {
             "id": row.id,
