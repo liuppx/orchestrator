@@ -29,6 +29,104 @@
       "title": "HubCancelRunPayloadV1",
       "type": "object"
     },
+    "HubCliTaskCreatePayloadV1": {
+      "additionalProperties": false,
+      "description": "Create a one-shot CLI agent task instance (Codex CLI or Claude Code CLI).\n\nThe prompt is the instance definition \u2014 the fixed task every run executes \u2014\nnever per-run input. Execution policy is part of the definition too, and the\nbypass modes of either CLI are deliberately not representable here. A CLI\ntask has no resident form, so it is always a scheduled instance.",
+      "properties": {
+        "claude_permission_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "plan",
+                "acceptEdits",
+                "dontAsk"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Claude Permission Mode"
+        },
+        "codex_sandbox": {
+          "anyOf": [
+            {
+              "enum": [
+                "read-only",
+                "workspace-write"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Codex Sandbox"
+        },
+        "deployment_mode": {
+          "$ref": "#/$defs/DeploymentMode",
+          "default": "scheduled"
+        },
+        "kind": {
+          "const": "cli_task",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 8192,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "run_timeout_seconds": {
+          "default": 900,
+          "maximum": 86400,
+          "minimum": 30,
+          "title": "Run Timeout Seconds",
+          "type": "integer"
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubInstanceScheduleV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "prompt"
+      ],
+      "title": "HubCliTaskCreatePayloadV1",
+      "type": "object"
+    },
     "HubCommandEventV1": {
       "additionalProperties": false,
       "properties": {
@@ -176,13 +274,29 @@
         "create_payload": {
           "anyOf": [
             {
-              "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+              "discriminator": {
+                "mapping": {
+                  "cli_task": "#/$defs/HubCliTaskCreatePayloadV1",
+                  "dingtalk": "#/$defs/HubOpenClawCreatePayloadV1",
+                  "whatsapp": "#/$defs/HubOpenClawCreatePayloadV1"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubCliTaskCreatePayloadV1"
+                }
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Create Payload"
         },
         "desired_revision": {
           "minimum": 1,
@@ -454,13 +568,29 @@
         "create_payload": {
           "anyOf": [
             {
-              "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+              "discriminator": {
+                "mapping": {
+                  "cli_task": "#/$defs/HubCliTaskCreatePayloadV1",
+                  "dingtalk": "#/$defs/HubOpenClawCreatePayloadV1",
+                  "whatsapp": "#/$defs/HubOpenClawCreatePayloadV1"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/HubOpenClawCreatePayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/HubCliTaskCreatePayloadV1"
+                }
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Create Payload"
         },
         "desired_revision": {
           "minimum": 1,

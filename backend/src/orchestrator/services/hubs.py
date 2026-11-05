@@ -373,15 +373,29 @@ class MachineHubService:
                         session.flush()
                     create_payload = request.create_payload
                     assert create_payload is not None
+                    if create_payload.kind == "cli_task":
+                        catalog_config: dict[str, object] = {
+                            "model": create_payload.model,
+                            "prompt": create_payload.prompt,
+                            "codex_sandbox": create_payload.codex_sandbox,
+                            "claude_permission_mode": create_payload.claude_permission_mode,
+                            "run_timeout_seconds": create_payload.run_timeout_seconds,
+                        }
+                        catalog_kind = "cli_task"
+                        profile_ref = f"{request.runtime_type}-task://{request.target_instance_id}"
+                    else:
+                        catalog_config = {"model": create_payload.model, "template": create_payload.template}
+                        catalog_kind = create_payload.kind
+                        profile_ref = f"openclaw-profile://{request.target_instance_id}"
                     session.add(
                         AgentInstance(
                             id=request.target_instance_id,
                             owner_id=catalog_owner_id,
                             node_id=hub_id,
                             runtime_type=request.runtime_type,
-                            profile_ref=f"openclaw-profile://{request.target_instance_id}",
+                            profile_ref=profile_ref,
                             workspace_ref=f"hub://{hub_id}/instances/{request.target_instance_id}/workspace",
-                            kind=create_payload.kind,
+                            kind=catalog_kind,
                             name=create_payload.name,
                             port=None,
                             desired_state="stopped",
@@ -391,7 +405,7 @@ class MachineHubService:
                                 create_payload.schedule.model_dump(mode="json") if create_payload.schedule else None
                             ),
                             revision=request.desired_revision,
-                            config_json={"model": create_payload.model, "template": create_payload.template},
+                            config_json=catalog_config,
                             created_at=now,
                             updated_at=now,
                         )

@@ -212,6 +212,47 @@ class HubOpenClawModelPayloadV1(HubProtocolModel):
     model: str = Field(min_length=1, max_length=128)
 
 
+CLI_RUNTIME_TYPES = frozenset({"codex", "claude-code"})
+CodexSandboxMode = Literal["read-only", "workspace-write"]
+ClaudePermissionMode = Literal["plan", "acceptEdits", "dontAsk"]
+
+
+class HubCliTaskCreatePayloadV1(HubProtocolModel):
+    """Create a one-shot CLI agent task instance (Codex CLI or Claude Code CLI).
+
+    The prompt is the instance definition — the fixed task every run executes —
+    never per-run input. Execution policy is part of the definition too, and the
+    bypass modes of either CLI are deliberately not representable here. A CLI
+    task has no resident form, so it is always a scheduled instance.
+    """
+
+    kind: Literal["cli_task"]
+    name: str = Field(min_length=1, max_length=128)
+    prompt: str = Field(min_length=1, max_length=8192)
+    model: str | None = Field(default=None, max_length=128)
+    codex_sandbox: CodexSandboxMode | None = None
+    claude_permission_mode: ClaudePermissionMode | None = None
+    run_timeout_seconds: int = Field(default=900, ge=30, le=86_400)
+    deployment_mode: DeploymentMode = DeploymentMode.SCHEDULED
+    schedule: HubInstanceScheduleV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_definition(self) -> HubCliTaskCreatePayloadV1:
+        if self.deployment_mode != DeploymentMode.SCHEDULED:
+            raise ValueError("CLI task instances are always scheduled; they have no resident service form")
+        if self.schedule is None:
+            raise ValueError("scheduled instances require a schedule")
+        if self.codex_sandbox is not None and self.claude_permission_mode is not None:
+            raise ValueError("set the execution policy for exactly one CLI runtime")
+        return self
+
+
+HubCreatePayloadV1 = Annotated[
+    Union[HubOpenClawCreatePayloadV1, HubCliTaskCreatePayloadV1],
+    Field(discriminator="kind"),
+]
+
+
 class HubOpenClawLogsPayloadV1(HubProtocolModel):
     kind: Literal["get_logs"]
     lines: int = Field(default=120, ge=1, le=1000)
@@ -396,7 +437,7 @@ _OPENCLAW_ONLY_PAYLOAD_KINDS = {"update_model", "get_logs", "diagnose"}
 def validate_command_payloads(
     operation: HubCommandOperation,
     runtime_type: str,
-    create_payload: HubOpenClawCreatePayloadV1 | None,
+    create_payload: object | None,
     operation_payload: object | None,
 ) -> None:
     """Shared payload rules for issued and polled commands."""
@@ -404,8 +445,20 @@ def validate_command_payloads(
         raise ValueError("create_payload must be present only for create_instance commands")
     if (operation in _OPERATIONS_REQUIRING_PAYLOAD) != (operation_payload is not None):
         raise ValueError("operation_payload must be present only for operations that require parameters")
-    if operation == HubCommandOperation.CREATE_INSTANCE and runtime_type != "openclaw":
-        raise ValueError("create_instance is currently supported only for OpenClaw")
+    if create_payload is not None:
+        create_kind = getattr(create_payload, "kind", None)
+        if runtime_type == "openclaw":
+            if create_kind == "cli_task":
+                raise ValueError("OpenClaw instances are created with a whatsapp or dingtalk payload")
+        elif runtime_type in CLI_RUNTIME_TYPES:
+            if create_kind != "cli_task":
+                raise ValueError("CLI task runtimes are created with a cli_task payload")
+            if runtime_type == "codex" and getattr(create_payload, "claude_permission_mode", None) is not None:
+                raise ValueError("claude_permission_mode does not apply to the codex runtime")
+            if runtime_type == "claude-code" and getattr(create_payload, "codex_sandbox", None) is not None:
+                raise ValueError("codex_sandbox does not apply to the claude-code runtime")
+        else:
+            raise ValueError("create_instance is not supported for this runtime type")
     payload_kind = getattr(operation_payload, "kind", None) if operation_payload is not None else None
     if payload_kind in _OPENCLAW_ONLY_PAYLOAD_KINDS and runtime_type != "openclaw":
         raise ValueError("operation_payload is currently supported only for OpenClaw")
@@ -424,7 +477,7 @@ class HubCommandV1(HubProtocolModel):
     trace_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     issued_at: AwareDatetime
     expires_at: AwareDatetime
-    create_payload: HubOpenClawCreatePayloadV1 | None = None
+    create_payload: HubCreatePayloadV1 | None = None
     operation_payload: HubOpenClawOperationPayloadV1 | None = None
 
     @model_validator(mode="after")
@@ -443,7 +496,7 @@ class HubCommandIssueRequestV1(HubProtocolModel):
     desired_revision: int = Field(ge=1)
     trace_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     expires_at: AwareDatetime
-    create_payload: HubOpenClawCreatePayloadV1 | None = None
+    create_payload: HubCreatePayloadV1 | None = None
     operation_payload: HubOpenClawOperationPayloadV1 | None = None
 
     @model_validator(mode="after")

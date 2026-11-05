@@ -139,6 +139,7 @@ class HubCommandOperation(StrEnum):
 - 未实现的能力显式返回 `unsupported`，不做 shell fallback 伪装通用层。
 - 定时场景（"每天跑一次 codex 任务"）是 CLI 类 runtime 最自然的用法，与阶段 B 天然契合，优先覆盖。
 - 模型供应商（OpenAI/Anthropic 凭证）单独建模，不等同于 runtime_type。
+- 实现进度：**C1 Hub 侧 Adapter 已完成，并已对真实 CLI 验证**——协议新增 `HubCliTaskCreatePayloadV1`（`kind=cli_task`：prompt 是实例定义而非每次运行的输入；Codex 沙箱只允许 `read-only|workspace-write`，Claude 权限模式只允许 `plan|acceptEdits|dontAsk`，两个 CLI 的 bypass 模式在协议上**不可表达**；CLI 任务没有常驻形态，恒为 scheduled），`create_payload` 成为按 `kind` 区分的 union，共享校验器按 runtime 匹配 payload。`hub_client/cli_adapter.py` 的 `CliTaskAdapter` 基类（Hub 本地 JSON 状态、每实例 workspace、独立进程组 + 协作取消 + 每实例超时、环境变量密钥脱敏、`logs/runs/<run_id>.log`）与 `CodexAdapter`（`codex exec --json -o … --skip-git-repo-check --ephemeral -C <workspace> -s <sandbox>`）、`ClaudeCodeAdapter`（`claude --print --output-format json --permission-mode <mode> --no-session-persistence -p <prompt>`）；argv 形态来自仓库 `agents/openclaw/coder` 已验证的调用，**去掉了**其默认的 `--dangerously-bypass-approvals-and-sandbox`。未安装的 CLI 申报空能力集（Backend 闸门自然拒绝），`get_logs/diagnose/update_model` 对 CLI 运行时不申报。Hub CLI 新增 `--codex` / `--claude-code` 与 `HUB_CODEX_BIN` / `HUB_CLAUDE_CODE_BIN`。测试 `backend/tests/test_cli_adapters.py` 用会记录 argv 的假 `codex`/`claude` 可执行文件证明传了哪些、没传哪些参数，并覆盖失败、超时、取消、启用/停用/删除、恢复语义与 Hub 本地调度集成。**真实验证**（2026-11-05，本机 `codex-cli 0.166.0`、`Claude Code 2.1.318`，使用机器已有登录）：两者均成功执行最小 prompt 并返回 `OK`，Codex 7.1s / Claude 3.4s，退出码 0。尚未做：模型供应商凭证经 secret 引用注入（目前继承 Hub 进程环境、使用机器已有登录）、C2 Backend 目录泛化（创建路由仍只接受 OpenClaw，实例目录经 `OpenClawRuntimeService` 读取）与 Web。
 
 ### 阶段 D — Marketplace → Runtime 桥接（两链收敛）
 

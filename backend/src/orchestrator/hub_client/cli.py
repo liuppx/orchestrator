@@ -12,6 +12,7 @@ from orchestrator.config import Settings
 from .core import HubClient, HubClientConfig, load_hub_credential
 from .http import HttpHubTransport, HubTransportError
 from .openclaw_adapter import OpenClawAdapter
+from .cli_adapter import ClaudeCodeAdapter, CodexAdapter
 from .simulated import SimulatedAdapter
 
 
@@ -58,15 +59,15 @@ def _check_openclaw(adapter: OpenClawAdapter) -> None:
         raise ValueError(f"OpenClaw instance catalog has an invalid shape: {config.state_file}")
 
 
-def _check_configuration(settings: Settings, *, openclaw: bool, simulate: bool) -> None:
+def _check_configuration(settings: Settings, *, openclaw: bool, simulate: bool, codex: bool = False, claude_code: bool = False) -> None:
     if not settings.hub_id:
         raise ValueError("HUB_ID is required")
     if not settings.hub_backend_url:
         raise ValueError("HUB_BACKEND_URL is required")
     if settings.resolved_hub_state_db == Path(":memory:"):
         raise ValueError("HUB_CLIENT_STATE_DB must be a persistent local file")
-    if not openclaw and not simulate:
-        raise ValueError("Select at least one adapter: --openclaw or --simulate")
+    if not (openclaw or simulate or codex or claude_code):
+        raise ValueError("Select at least one adapter: --openclaw, --codex, --claude-code or --simulate")
 
     HubClientConfig.local(settings.hub_id, settings.hub_version, settings.resolved_hub_state_db)
     credential_file = settings.resolved_hub_credential_file
@@ -80,6 +81,14 @@ def _check_configuration(settings: Settings, *, openclaw: bool, simulate: bool) 
     )
     if openclaw:
         _check_openclaw(OpenClawAdapter.from_settings(settings))
+    for enabled, adapter in ((codex, CodexAdapter), (claude_code, ClaudeCodeAdapter)):
+        if enabled and adapter.from_settings(settings).runtime_version() is None:
+            raise ValueError(f"{adapter.binary_name} CLI was not found; install it or set HUB_{adapter.binary_name.upper()}_BIN")
+
+
+def _selected_adapters(args: argparse.Namespace) -> str:
+    names = (("openclaw", args.openclaw), ("codex", args.codex), ("claude-code", args.claude_code), ("simulate", args.simulate))
+    return ",".join(name for name, enabled in names if enabled)
 
 
 def main() -> None:
@@ -88,6 +97,8 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="validate local Hub configuration without contacting Backend")
     parser.add_argument("--simulate", action="store_true", help="attach the mock Runtime Adapter for protocol testing")
     parser.add_argument("--openclaw", action="store_true", help="manage OpenClaw instances on this machine")
+    parser.add_argument("--codex", action="store_true", help="run scheduled Codex CLI tasks on this machine")
+    parser.add_argument("--claude-code", action="store_true", help="run scheduled Claude Code CLI tasks on this machine")
     parser.add_argument(
         "--migrate-openclaw-state",
         action="store_true",
@@ -110,19 +121,18 @@ def main() -> None:
         raise SystemExit("HUB_CLIENT_STATE_DB must be a persistent local file")
     if args.check:
         try:
-            _check_configuration(settings, openclaw=args.openclaw, simulate=args.simulate)
+            _check_configuration(settings, openclaw=args.openclaw, simulate=args.simulate, codex=args.codex, claude_code=args.claude_code)
         except (OSError, ValueError) as exc:
             raise SystemExit(f"Hub preflight failed: {exc}") from exc
-        adapters = ",".join(name for name, enabled in (("openclaw", args.openclaw), ("simulate", args.simulate)) if enabled)
-        print(f"Hub preflight passed: hub={settings.hub_id} adapters={adapters} credential=valid")
+        print(f"Hub preflight passed: hub={settings.hub_id} adapters={_selected_adapters(args)} credential=valid")
         return
 
     if not settings.hub_id:
         raise SystemExit("HUB_ID is required")
     if not settings.hub_backend_url:
         raise SystemExit("HUB_BACKEND_URL is required")
-    if not args.simulate and not args.openclaw:
-        raise SystemExit("Select at least one adapter: --openclaw or --simulate")
+    if not (args.simulate or args.openclaw or args.codex or args.claude_code):
+        raise SystemExit("Select at least one adapter: --openclaw, --codex, --claude-code or --simulate")
     config = HubClientConfig.local(settings.hub_id, settings.hub_version, settings.resolved_hub_state_db)
     client = HubClient(
         config,
@@ -134,6 +144,8 @@ def main() -> None:
         ),
         adapters=[
             *([OpenClawAdapter.from_settings(settings)] if args.openclaw else []),
+            *([CodexAdapter.from_settings(settings)] if args.codex else []),
+            *([ClaudeCodeAdapter.from_settings(settings)] if args.claude_code else []),
             *([SimulatedAdapter()] if args.simulate else []),
         ],
     )
