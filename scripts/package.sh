@@ -4,8 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/package-common.sh"
 package_common_init orchestrator "$@"
 for command_name in npm uv; do command -v "$command_name" >/dev/null 2>&1 || package_fail "$command_name is required"; done
-[[ -f "$PACKAGE_ROOT_DIR/web/package-lock.json" && -f "$PACKAGE_ROOT_DIR/backend/uv.lock" ]] || package_fail 'web/package-lock.json and backend/uv.lock are required'
-(cd "$PACKAGE_ROOT_DIR/web" && npm ci --no-audit --no-fund && npm run build)
+[[ -f "$PACKAGE_ROOT_DIR/backend/uv.lock" ]] || package_fail 'backend/uv.lock is required'
+(cd "$PACKAGE_ROOT_DIR/web" && npm install --no-audit --no-fund && npm run build)
 (cd "$PACKAGE_ROOT_DIR/backend" && uv sync --locked --no-dev)
 [[ -f "$PACKAGE_ROOT_DIR/web/dist/index.html" ]] || package_fail 'web build output is missing'
 package_make_root orchestrator
