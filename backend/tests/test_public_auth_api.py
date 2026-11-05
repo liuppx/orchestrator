@@ -1076,6 +1076,93 @@ class PublicAuthApiTest(unittest.TestCase):
             self.assertEqual(catalog_instance.config_json["prompt"], "Say OK")
             self.assertEqual(catalog_instance.observed_state, "completed")
 
+    def test_lifecycle_worker_turns_agent_artifacts_into_hub_instances(self) -> None:
+        self.start_server("never", use_database=True, hub_id="runtime-worker-hub")
+        owner_headers = self.login(Account.create())
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/runtime-worker-hub/credentials",
+            method="POST",
+            payload={},
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
+        self.assertEqual(status, 200)
+        root = Path(self.tmpdir.name)
+        (root / "bin").mkdir(exist_ok=True)
+        codex = CodexAdapter(root / "codex-state.json", root / "codex-instances", binary=_write_executable(root / "bin" / "codex", FAKE_CODEX))
+        hub_client = HubClient(
+            HubClientConfig.local("runtime-worker-hub", "0.1.0", root / "runtime-worker.sqlite3"),
+            HttpHubTransport(self.base, "runtime-worker-hub", issued["token"]),
+            [codex],
+        )
+        self.addCleanup(hub_client.close)
+        hub_client.run_once()
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
+
+        worker_headers = {"Authorization": "Bearer test-worker-token", "X-Worker-ID": "runtime-worker-1"}
+        payload = {
+            "owner_id": "project-local",
+            "runtime_type": "codex",
+            "instance_id": "codex-nightly-abc123",
+            "create_payload": {
+                "kind": "cli_task",
+                "name": "Nightly Digest",
+                "prompt": "Summarize yesterday's commits.",
+                "codex_sandbox": "read-only",
+                "schedule": {"kind": "interval", "seconds": 3600},
+            },
+        }
+        status, _, _ = self.request("/api/v1/internal/runtime/instances", method="POST", payload=payload, headers={"Authorization": "Bearer wrong"})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("/api/v1/internal/runtime/instances", method="POST", payload={**payload, "create_payload": {**payload["create_payload"], "shell": "rm -rf /"}}, headers=worker_headers)
+        self.assertEqual(status, 422)
+
+        status, created, _ = self.request("/api/v1/internal/runtime/instances", method="POST", payload=payload, headers=worker_headers)
+        self.assertEqual(status, 200, created)
+        self.assertTrue(created["data"]["created"])
+        instance = created["data"]["instance"]
+        self.assertEqual((instance["id"], instance["runtime_type"], instance["owner_id"], instance["deployment_mode"]), ("codex-nightly-abc123", "codex", "project-local", "scheduled"))
+        self.assertEqual(instance["task"]["prompt"], "Summarize yesterday's commits.")
+        self.assertIn("codex-nightly-abc123", codex.store.load())
+
+        # Retried task: idempotent on instance id, no second Hub command.
+        status, again, _ = self.request("/api/v1/internal/runtime/instances", method="POST", payload=payload, headers=worker_headers)
+        self.assertEqual((status, again["data"]["created"]), (200, False))
+        status, conflict, _ = self.request("/api/v1/internal/runtime/instances", method="POST", payload={**payload, "owner_id": "project-other"}, headers=worker_headers)
+        self.assertEqual(status, 409)
+
+        # Project-owned instances are not visible to an unrelated wallet.
+        status, listing, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+        self.assertEqual((status, listing["total"]), (200, 0))
+
+        status, deleted, _ = self.request("/api/v1/internal/runtime/instances/codex-nightly-abc123/delete", method="POST", payload={}, headers=worker_headers)
+        self.assertEqual((status, deleted["data"]["deleted"]), (200, True))
+        self.assertNotIn("codex-nightly-abc123", codex.store.load())
+        status, missing, _ = self.request("/api/v1/internal/runtime/instances/codex-nightly-abc123/delete", method="POST", payload={}, headers=worker_headers)
+        self.assertEqual((status, missing["data"]["deleted"], missing["data"]["reason"]), (200, False, "INSTANCE_NOT_FOUND"))
+
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
+        with sessions_for(self.settings.database_url)() as db_session:
+            self.assertIsNone(db_session.get(AgentInstance, "codex-nightly-abc123"))
+            commands = db_session.query(MachineHubCommand).filter_by(hub_id="runtime-worker-hub").order_by(MachineHubCommand.created_at.asc()).all()
+            self.assertEqual([command.operation for command in commands], ["create_instance", "delete_instance"])
+
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")
 

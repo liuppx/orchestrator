@@ -64,7 +64,7 @@ Orchestrator 处于几个成熟类别的交叉处，不应照搬单一产品的�
 | Agent 应用/工作流构建 | 无 | 完整 | 部分 | 不适用 | 不适用 |
 | Agent tracing / evaluation | 无 | 部分 | 完整 | 不适用 | 不适用 |
 | Runtime/Node 生命周期管理 | 部分：本机 OpenClaw；有 Runtime Node 心跳接收 API 和单节点应用 worker | 部分：AI 应用运行 | 部分：LangGraph Deployment | 完整：容器/集群 | 部分：任务 worker |
-| 异构 Agent Runtime adapter | 无：当前控制台仅 OpenClaw adapter | 不适用 | 部分：LangGraph 生态 | 不适用：以容器环境为主 | 不适用 |
+| 异构 Agent Runtime adapter | 部分：Hub 内有 OpenClaw、Codex CLI、Claude Code CLI 三个 adapter；CLI adapter 已对真实 CLI 验证，但凭证仍继承机器已有登录 | 不适用 | 部分：LangGraph 生态 | 不适用：以容器环境为主 | 不适用 |
 | 持久化任务、重试与 fencing | 部分：PostgreSQL 任务 lease/attempt 已实现，实际执行器为单节点 | 部分 | 部分 | 不适用 | 完整 |
 | 发布制品校验 | 部分：Node release digest/checksum/Ed25519 验证已实现 | 部分 | 部分 | 部分：镜像/stack | 不适用 |
 | MCP Server 作为 Agent 工具 | 不在控制面核心职责 | 完整/部分，取决于应用配置 | 部分 | 不适用 | 不适用 |
@@ -94,8 +94,9 @@ Orchestrator 处于几个成熟类别的交叉处，不应照搬单一产品的�
 - 已有 PostgreSQL 持久化模型：`RuntimeNode`、`AgentInstance`、版本化配置、生命周期任务、任务事件、审计事件与 Warehouse outbox；任务支持幂等、lease、attempt fencing 和 retry schedule。
 - 已有 OpenClaw 本机进程创建、独立 profile/端口/工作目录、启停、删除、模型配置、日志、WhatsApp 配对及诊断；这些实例操作通过 Machine Hub Adapter 执行，Backend 只维护 owner/catalog 镜像；消息和交易工作台属于领域应用，不是 Runtime Provider。
 - 已有 Node Registry 发布制品读取、checksum/digest、Ed25519 验签、受限 Compose 生成、健康探测和单节点升级回滚。
-- 已有 Runtime Node 心跳 API、Machine Hub 服务端协议、本地 SQLite inbox/outbox 客户端，以及 OpenClaw 的本机状态 Adapter；Runtime API 和旧 Messenger `/agent` 的创建、删除、模型配置、启停、日志、诊断、配对及 inventory 回报已通过真实 Backend HTTP API 做端到端测试，DingTalk 凭证以目标 Hub 专属密文传递。仍没有生产 Hub 安装/升级流程、工作台 Hub 控制台、组织级 RBAC、Codex/Claude Adapter 或远程多机生产验收。
-- 当前 dashboard 只展示最近在线 Hub 上报的 OpenClaw 能力；Nanobot、Hermes、MCP Server 没有可操作的通用 adapter。产品不可宣称已经支持“任意 runtime 纳管”。
+- 已有 Runtime Node 心跳 API、Machine Hub 服务端协议、本地 SQLite inbox/outbox 客户端，以及 OpenClaw 的本机状态 Adapter；Runtime API 和旧 Messenger `/agent` 的创建、删除、模型配置、启停、日志、诊断、配对及 inventory 回报已通过真实 Backend HTTP API 做端到端测试，DingTalk 凭证以目标 Hub 专属密文传递。仍没有生产 Hub 安装/升级流程、工作台 Hub 控制台、组织级 RBAC 或远程多机生产验收。
+- 已有实例部署形态（常驻服务 / 定时任务）、Hub 本地调度器（cron / 间隔，离线可触发、不回放错过的时隙）、运行历史与控制台的启用 / 停用 / 运行一次；Codex CLI 与 Claude Code CLI 的 Hub Adapter 以一次性任务运行真实 CLI（沙箱 / 权限模式只允许安全值，bypass 模式在协议上不可表达），已对本机安装的 CLI 验证；市场 `AgentRuntime` 制品经同一套验签后转为 typed Hub 创建命令。OpenClaw 的定时”运行一次”目前只是诊断探针而非 Agent 任务；CLI 凭证继承机器已有登录，尚无 secret 引用注入。详见[市场驱动的异构 Agent 实例部署设计](marketplace-runtime-deployment-design.md)。
+- 当前 dashboard 展示最近在线 Hub 上报的全部 Runtime Adapter 能力（未安装的 CLI 显示为 not-installed）；Nanobot、Hermes、MCP Server 没有可操作的通用 adapter。产品不可宣称已经支持”任意 runtime 纳管”。
 - 现有控制台仍使用钱包登录和 owner 隔离，尚无组织/项目/RBAC 管理后台、多租户管理员、密钥轮换界面或正式审计浏览器。
 - 生命周期任务 worker 已支持安全的首期签名应用部署，但静态端口、多 Project 路由、配额、告警和备份恢复仍是上线前事项。
 

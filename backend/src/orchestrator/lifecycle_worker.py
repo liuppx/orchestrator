@@ -15,12 +15,21 @@ from uuid import uuid4
 
 from orchestrator.config import Settings
 from orchestrator.node_registry import NodeRegistryClient, ReleaseVerifier
-from orchestrator.runtime_executor import ExecutionResult, RuntimeExecutor
+from orchestrator.runtime_executor import ExecutionResult, InstanceGatewayError, RuntimeExecutor
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
         return None
+
+
+class ControlPlaneError(RuntimeError):
+    """A control-plane request failed; `status` is the HTTP status when one was received."""
+
+    def __init__(self, message: str, status: int | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
 
 
 class ControlPlaneClient:
@@ -60,8 +69,16 @@ class ControlPlaneClient:
                 content = response.read(1024 * 1024 + 1)
                 if len(content) > 1024 * 1024:
                     raise RuntimeError("control plane response too large")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise RuntimeError("control plane request failed") from exc
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                decoded_error = json.loads(exc.read(64 * 1024).decode("utf-8"))
+                detail = str(decoded_error.get("detail") or "") if isinstance(decoded_error, dict) else ""
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                detail = ""
+            raise ControlPlaneError(f"control plane request failed with HTTP {exc.code}", exc.code, detail[:512]) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ControlPlaneError("control plane request failed") from exc
         try:
             decoded = json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -93,6 +110,36 @@ class ControlPlaneClient:
             {"reason": reason, "retry_delay_seconds": retry_delay_seconds},
             attempt,
         )
+
+    # --- InstanceGateway: agent artifacts become Hub instances through the control plane ---
+
+    @staticmethod
+    def _gateway_error(exc: ControlPlaneError) -> InstanceGatewayError:
+        if exc.status == 404:
+            return InstanceGatewayError("INSTANCE_NOT_FOUND")
+        if exc.status == 409:
+            return InstanceGatewayError("HUB_REJECTED")
+        if exc.status in {400, 422}:
+            return InstanceGatewayError("INVALID_AGENT_RUNTIME")
+        if exc.status == 502:
+            return InstanceGatewayError("HUB_COMMAND_FAILED")
+        # 503/504 and transport failures: the Hub or control plane may come back.
+        return InstanceGatewayError("HUB_UNAVAILABLE", retryable=True)
+
+    def create_instance(self, owner_id: str, runtime_type: str, instance_id: str, create_payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self.post(
+                "/api/v1/internal/runtime/instances",
+                {"owner_id": owner_id, "runtime_type": runtime_type, "instance_id": instance_id, "create_payload": create_payload},
+            )
+        except ControlPlaneError as exc:
+            raise self._gateway_error(exc) from exc
+
+    def delete_instance(self, instance_id: str) -> dict[str, Any]:
+        try:
+            return self.post(f"/api/v1/internal/runtime/instances/{urllib.parse.quote(instance_id, safe='')}/delete", {})
+        except ControlPlaneError as exc:
+            raise self._gateway_error(exc) from exc
 
 
 class LifecycleWorker:
@@ -251,6 +298,7 @@ def build_worker(settings: Settings) -> LifecycleWorker:
         application_config_root=settings.resolved_application_config_dir,
         application_public_base_url=settings.application_public_base_url,
         docker_binary=os.environ.get("HUB_DOCKER_BIN", "docker"),
+        instance_gateway=control,
     )
     return LifecycleWorker(control, executor, worker_id, settings.worker_lease_seconds, settings.worker_max_attempts)
 

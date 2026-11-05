@@ -3,9 +3,11 @@ from __future__ import annotations
 import hmac
 import json
 import re
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orchestrator.config import Settings
 from orchestrator.models import RuntimeNodeHeartbeatRequest, RuntimeNodeListResponse
@@ -13,17 +15,22 @@ from orchestrator.protocols.hub_v1 import (
     HubCommandIssueRequestV1,
     HubCommandLeaseV1,
     HubCommandLeaseRenewalRequestV1,
+    HubCommandOperation,
     HubCommandPollResponseV1,
+    HubCreatePayloadV1,
     HubCredentialIssueRequestV1,
     HubEventBatchRequestV1,
     HubHeartbeatRequestV1,
     HubInventorySnapshotV1,
+    InstanceId,
+    RuntimeType,
 )
 from orchestrator.services.nodes import NODE_ID_PATTERN, RuntimeNodeService
 from orchestrator.services.hubs import (
     HubAuthenticationError,
     HubConflictError,
     HubNotFoundError,
+    HubServiceError,
     MachineHubService,
 )
 from orchestrator.services.runtime import AgentRuntimeState
@@ -398,6 +405,117 @@ async def internal_task(
     if task is None or task.get("owner_id", task.get("instance_id", "project")) != str(x_yeying_instance or "project"):
         raise HTTPException(status_code=404, detail="task not found")
     return ok({"task": task})
+
+
+class InternalRuntimeInstanceCreate(BaseModel):
+    """Worker request to turn a verified marketplace artifact into a Hub-managed instance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner_id: str = Field(min_length=1, max_length=255)
+    runtime_type: RuntimeType
+    instance_id: InstanceId
+    create_payload: HubCreatePayloadV1
+
+
+@router.post("/runtime/instances")
+async def internal_create_runtime_instance(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+) -> dict:
+    """Create a catalog instance on the configured Hub for the lifecycle worker.
+
+    Idempotent on instance_id: a retried task finds the existing instance and does
+    not issue a second create command.
+    """
+    from orchestrator.api.public import _await_hub_command
+
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    if not settings.hub_id or not settings.database_url:
+        raise HTTPException(status_code=503, detail="Machine Hub is not configured for this Backend")
+    try:
+        body = InternalRuntimeInstanceCreate.model_validate(await request_payload(request))
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    hub_service = machine_hub_service(settings)
+    try:
+        existing = hub_service.catalog_instance(body.instance_id)
+        if existing is not None:
+            if existing.get("owner_id") != body.owner_id or existing.get("runtime_type") != body.runtime_type:
+                raise HTTPException(status_code=409, detail="instance id belongs to another owner or runtime")
+            return ok({"instance": existing, "created": False})
+        if not hub_service.is_online(settings.hub_id):
+            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        command = HubCommandIssueRequestV1(
+            target_instance_id=body.instance_id,
+            runtime_type=body.runtime_type,
+            operation=HubCommandOperation.CREATE_INSTANCE,
+            idempotency_key=f"worker-create-{uuid4().hex}",
+            desired_revision=1,
+            trace_id=f"worker-create-{uuid4().hex}",
+            expires_at=datetime.now(UTC) + timedelta(minutes=2),
+            create_payload=body.create_payload,
+        )
+        receipt = hub_service.issue_command(
+            settings.hub_id,
+            command,
+            actor=f"worker:{str(x_worker_id or '').strip() or 'unknown'}",
+            catalog_owner_id=body.owner_id,
+        )
+    except HubServiceError as exc:
+        raise map_hub_service_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await _await_hub_command(hub_service, settings.hub_id, str(receipt.command_id), "create")
+    try:
+        created = hub_service.catalog_instance(body.instance_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if created is None:
+        raise HTTPException(status_code=502, detail="Hub created the instance but the catalog has no record of it")
+    return ok({"instance": created, "created": True})
+
+
+@router.post("/runtime/instances/{instance_id}/delete")
+async def internal_delete_runtime_instance(
+    instance_id: str,
+    authorization: str | None = Header(default=None),
+    x_worker_id: str | None = Header(default=None),
+) -> dict:
+    from orchestrator.api.public import _await_hub_command
+
+    settings = Settings()
+    require_worker_token(settings, authorization)
+    if not settings.database_url:
+        raise HTTPException(status_code=503, detail="Machine Hub catalog is not configured for this Backend")
+    hub_service = machine_hub_service(settings)
+    try:
+        existing = hub_service.catalog_instance(instance_id)
+        if existing is None:
+            return ok({"deleted": False, "reason": "INSTANCE_NOT_FOUND"})
+        hub_id = str(existing["hub_id"])
+        if not hub_service.is_online(hub_id):
+            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        command = HubCommandIssueRequestV1(
+            target_instance_id=instance_id,
+            runtime_type=str(existing["runtime_type"]),
+            operation=HubCommandOperation.DELETE_INSTANCE,
+            idempotency_key=f"worker-delete-{uuid4().hex}",
+            desired_revision=hub_service.next_desired_revision(hub_id, instance_id),
+            trace_id=f"worker-delete-{uuid4().hex}",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        receipt = hub_service.issue_command(hub_id, command, actor=f"worker:{str(x_worker_id or '').strip() or 'unknown'}")
+    except HubServiceError as exc:
+        raise map_hub_service_error(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await _await_hub_command(hub_service, hub_id, str(receipt.command_id), "delete", timeout_seconds=60)
+    return ok({"deleted": True})
 
 
 @router.post("/tasks/claim")

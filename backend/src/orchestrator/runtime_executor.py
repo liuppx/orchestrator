@@ -15,9 +15,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from orchestrator.node_registry import NodeRegistryClient, ReleaseError, ReleaseVerifier, VerifiedRelease
+from orchestrator.node_registry import NodeRegistryClient, ReleaseError, ReleaseVerifier, VerifiedAgentRelease, VerifiedRelease
 
 
 class _HealthNoRedirect(urllib.request.HTTPRedirectHandler):
@@ -33,12 +33,34 @@ class ExecutionResult:
     retryable: bool = False
 
 
+class InstanceGatewayError(RuntimeError):
+    """A control-plane instance operation failed with a classified code."""
+
+    def __init__(self, code: str, retryable: bool = False) -> None:
+        super().__init__(code)
+        self.code = code
+        self.retryable = retryable
+
+
+class InstanceGateway(Protocol):
+    """How the executor asks the control plane to create or delete a Hub-managed instance.
+
+    The lifecycle worker never talks to a Hub or the database itself; the control
+    plane issues the typed command and reports the outcome.
+    """
+
+    def create_instance(self, owner_id: str, runtime_type: str, instance_id: str, create_payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def delete_instance(self, instance_id: str) -> dict[str, Any]: ...
+
+
 class RuntimeExecutor:
     """Install only the constrained runtime projection of a verified release.
 
     The publisher's compose file is validated and retained for provenance, but is
     never passed to Docker. The executor emits a minimal compose file from the
-    signed runtime manifest and the node's own environment.
+    signed runtime manifest and the node's own environment. Agent artifacts never
+    touch Docker at all: their signed manifest becomes a typed Hub create command.
     """
 
     def __init__(
@@ -51,6 +73,7 @@ class RuntimeExecutor:
         docker_binary: str = "docker",
         command_timeout_seconds: int = 600,
         health_timeout_seconds: int = 300,
+        instance_gateway: InstanceGateway | None = None,
     ) -> None:
         self.applications_root = applications_root
         self.registry = registry
@@ -60,6 +83,7 @@ class RuntimeExecutor:
         self.docker_binary = docker_binary
         self.command_timeout_seconds = max(5, min(int(command_timeout_seconds), 3600))
         self.health_timeout_seconds = max(1, min(int(health_timeout_seconds), 600))
+        self.instance_gateway = instance_gateway
 
     def execute(self, task: dict[str, Any], cancelled: threading.Event | None = None) -> ExecutionResult:
         action = str(task.get("action") or "")
@@ -90,6 +114,11 @@ class RuntimeExecutor:
         try:
             data = self.registry.fetch_release(app_id, version)
             release = self.verifier.verify(data, app_id, version, expected_digest)
+            if isinstance(release, VerifiedAgentRelease):
+                return self._execute_agent(release, owner_id, owner_key, app_root, current)
+            if current.get("instance_id"):
+                # The installed version is an agent instance; a container release cannot replace it in place.
+                return self._failure_with_previous("RELEASE_KIND_CHANGED", release.release_digest, current, app_root)
             release_dir = app_root / f"{release.version}-{release.release_digest.removeprefix('sha256:')}"
             self._materialize_release(release_dir, release)
             project_name = self._project_name(owner_id, app_id)
@@ -158,6 +187,8 @@ class RuntimeExecutor:
     ) -> ExecutionResult:
         if not current:
             return ExecutionResult("succeeded", "NOT_INSTALLED", {"health": True, "runtime": "compose"})
+        if current.get("instance_id"):
+            return self._uninstall_agent(app_root, current)
         release_name = str(current.get("release_dir") or "")
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?-[a-f0-9]{64}", release_name):
             return self._failure("INVALID_CURRENT_STATE")
@@ -189,6 +220,101 @@ class RuntimeExecutor:
                 rollback_succeeded=rollback,
                 rollback_version=str(current.get("version")) if rollback else "",
             )
+
+    # --- agent artifacts ------------------------------------------------------------
+
+    @staticmethod
+    def _agent_instance_id(runtime_type: str, app_id: str, owner_key: str) -> str:
+        # Stable per (owner, app): an upgrade replaces the definition under the same id.
+        return f"{runtime_type}-{app_id}-{owner_key[:12]}"
+
+    def _materialize_agent_release(self, release_dir: Path, release: VerifiedAgentRelease) -> None:
+        self._ensure_private_directory(release_dir)
+        for name, content in release.files.items():
+            target = release_dir / name
+            self._ensure_private_directory(target.parent)
+            self._atomic_write(target, content, 0o600)
+        self._atomic_json(
+            release_dir / "release.json",
+            {
+                "app_id": release.app_id,
+                "version": release.version,
+                "release_digest": release.release_digest,
+                "runtime_type": release.runtime_type,
+                "deployment_mode": release.deployment_mode,
+            },
+        )
+
+    def _execute_agent(
+        self,
+        release: VerifiedAgentRelease,
+        owner_id: str,
+        owner_key: str,
+        app_root: Path,
+        current: dict[str, Any],
+    ) -> ExecutionResult:
+        if self.instance_gateway is None:
+            return self._failure_with_previous("AGENT_GATEWAY_NOT_CONFIGURED", release.release_digest, current, app_root)
+        if current and not current.get("instance_id"):
+            return self._failure_with_previous("RELEASE_KIND_CHANGED", release.release_digest, current, app_root)
+        instance_id = self._agent_instance_id(release.runtime_type, release.app_id, owner_key)
+        release_dir = app_root / f"{release.version}-{release.release_digest.removeprefix('sha256:')}"
+        previous_instance = str(current.get("instance_id") or "")
+        previous_removed = False
+        try:
+            self._materialize_agent_release(release_dir, release)
+            if previous_instance:
+                # Upgrade: the previous definition is removed before the new one is created.
+                # The Hub keeps workspaces and run logs on disk; only the catalog entry goes.
+                self.instance_gateway.delete_instance(previous_instance)
+                previous_removed = True
+            self.instance_gateway.create_instance(owner_id, release.runtime_type, instance_id, dict(release.create_payload))
+        except InstanceGatewayError as exc:
+            result = self._failure_with_previous(exc.code, release.release_digest, current, app_root)
+            metadata = dict(result.metadata)
+            if previous_removed:
+                # The old definition is already gone; nothing is serving this app until a retry succeeds.
+                metadata["previous_removed"] = True
+                self._atomic_json(app_root / "current.json", {})
+            return ExecutionResult(result.outcome, result.result_code, metadata, exc.retryable)
+        self._atomic_json(
+            app_root / "current.json",
+            {
+                "app_id": release.app_id,
+                "version": release.version,
+                "release_digest": release.release_digest,
+                "release_dir": release_dir.name,
+                "instance_id": instance_id,
+                "runtime": release.runtime_type,
+                "updated_at": time.time(),
+            },
+        )
+        return ExecutionResult(
+            "succeeded",
+            "OK",
+            {
+                "health": True,
+                "release_digest": release.release_digest,
+                "runtime": release.runtime_type,
+                "version": release.version,
+                "instance_id": instance_id,
+                "deployment_mode": release.deployment_mode,
+            },
+        )
+
+    def _uninstall_agent(self, app_root: Path, current: dict[str, Any]) -> ExecutionResult:
+        if self.instance_gateway is None:
+            return self._failure("AGENT_GATEWAY_NOT_CONFIGURED")
+        instance_id = str(current.get("instance_id") or "")
+        runtime_type = str(current.get("runtime") or "agent")
+        try:
+            self.instance_gateway.delete_instance(instance_id)
+        except InstanceGatewayError as exc:
+            if exc.code != "INSTANCE_NOT_FOUND":
+                result = self._failure_with_previous(exc.code, None, current, app_root)
+                return ExecutionResult(result.outcome, result.result_code, result.metadata, exc.retryable)
+        self._atomic_json(app_root / "current.json", {})
+        return ExecutionResult("succeeded", "OK", {"health": True, "runtime": runtime_type, "instance_id": instance_id})
 
     def _rollback(
         self,
@@ -389,7 +515,15 @@ class RuntimeExecutor:
         app_root: Path,
     ) -> ExecutionResult:
         metadata: dict[str, Any] = {}
-        if current:
+        if current and current.get("instance_id"):
+            # Agent installs have no container to probe; the previous definition stays
+            # on the Hub unless an upgrade already removed it (see _execute_agent).
+            metadata = {
+                "previous_version": str(current.get("version") or ""),
+                "previous_instance_id": str(current.get("instance_id") or ""),
+                "runtime": str(current.get("runtime") or "agent"),
+            }
+        elif current:
             try:
                 release_dir_name = str(current.get("release_dir") or "")
                 if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?-[a-f0-9]{64}", release_dir_name):
@@ -397,7 +531,7 @@ class RuntimeExecutor:
                 release_dir = app_root / release_dir_name
                 release_dir.resolve().relative_to(app_root.resolve())
                 previous = self._verify_existing_release(release_dir)
-                if self._probe_health(previous):
+                if isinstance(previous, VerifiedRelease) and self._probe_health(previous):
                     metadata = {"rollback_succeeded": True, "rollback_version": previous.version}
             except (OSError, ValueError, ReleaseError):
                 pass
@@ -535,6 +669,7 @@ class RuntimeExecutor:
         retryable = normalized in {
             "NODE_UNAVAILABLE", "NODE_HTTP_ERROR", "NODE_RATE_LIMITED", "DOCKER_NOT_AVAILABLE",
             "COMPOSE_FAILED", "COMPOSE_TIMEOUT", "HEALTHCHECK_FAILED", "ROLLED_BACK", "EXECUTOR_ERROR",
+            "HUB_UNAVAILABLE",
         }
         return ExecutionResult("failed", normalized, metadata, retryable)
 

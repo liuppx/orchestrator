@@ -66,6 +66,28 @@ class VerifiedRelease:
     runtime: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedAgentRelease:
+    """A signed marketplace artifact that defines an Agent Runtime instance instead of a container.
+
+    `create_payload` is the typed Hub create command built from the signed manifest at
+    verification time, so what the artifact declares is exactly what a Hub will accept.
+    """
+
+    app_id: str
+    version: str
+    release_digest: str
+    runtime_type: str
+    deployment_mode: str
+    create_payload: dict[str, Any]
+    files: dict[str, str]
+    application: dict[str, Any]
+    runtime: dict[str, Any]
+
+
+AGENT_RUNTIME_TYPES = ("codex", "claude-code", "openclaw")
+
+
 class NodeRegistryClient:
     def __init__(
         self,
@@ -173,12 +195,12 @@ class NodeRegistryClient:
 
 
 class ReleaseVerifier:
+    # compose.yaml is required only for container (`kind: Runtime`) releases; see verify().
     REQUIRED_FILES = {
         "application.json",
         "runtime.json",
         "config.schema.json",
         "permissions.json",
-        "compose.yaml",
         "checksums.json",
         "signature.json",
     }
@@ -208,7 +230,7 @@ class ReleaseVerifier:
         expected_app_id: str,
         expected_version: str,
         expected_digest: str | None = None,
-    ) -> VerifiedRelease:
+    ) -> VerifiedRelease | VerifiedAgentRelease:
         files = data.get("files")
         if not isinstance(files, dict) or any(not isinstance(name, str) or not isinstance(value, str) for name, value in files.items()):
             raise ReleaseError("INVALID_RELEASE_FILES")
@@ -249,6 +271,15 @@ class ReleaseVerifier:
         if not isinstance(config_schema, dict) or not isinstance(permissions, dict):
             raise ReleaseError("INVALID_RELEASE_METADATA")
         self._validate_application(application, expected_app_id, expected_version)
+        runtime_kind = runtime.get("kind") if isinstance(runtime, dict) else None
+        if runtime_kind == "AgentRuntime":
+            # An agent artifact defines a Runtime instance, not a container: a compose file
+            # would make the bundle ambiguous, so its presence is rejected outright.
+            if "compose.yaml" in files:
+                raise ReleaseError("AGENT_RELEASE_HAS_COMPOSE")
+            return self._validate_agent_runtime(runtime, files, application, expected_app_id, expected_version, digest)
+        if "compose.yaml" not in files:
+            raise ReleaseError("RELEASE_FILE_MISSING")
         release = self._validate_runtime(runtime, files, application, expected_app_id, expected_version, digest)
         self._validate_compose(files["compose.yaml"], release)
         return release
@@ -354,6 +385,98 @@ class ReleaseVerifier:
             raise ReleaseError("COMPOSE_PORT_MISMATCH")
         if service.get("restart", "unless-stopped") not in {"no", "always", "on-failure", "unless-stopped"}:
             raise ReleaseError("UNSUPPORTED_RELEASE_COMPOSE")
+
+    @staticmethod
+    def _display_name(application: dict[str, Any], app_id: str) -> str:
+        names = application.get("metadata", {}).get("name", {}) if isinstance(application, dict) else {}
+        if isinstance(names, dict):
+            candidate = names.get("en-US") or next((value for value in names.values() if isinstance(value, str) and value.strip()), "")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()[:128]
+        return app_id
+
+    def _validate_agent_runtime(
+        self,
+        runtime: dict[str, Any],
+        files: dict[str, str],
+        application: dict[str, Any],
+        app_id: str,
+        version: str,
+        digest: str,
+    ) -> VerifiedAgentRelease:
+        """Validate an `AgentRuntime` manifest by building the typed Hub create payload it implies.
+
+        The protocol models are the single source of truth for what a Hub accepts, so the
+        artifact cannot express anything (bypass modes, secrets, arbitrary fields) the Hub
+        would refuse. Only WhatsApp OpenClaw artifacts exist: DingTalk needs a client secret,
+        and secrets never belong in a signed public bundle.
+        """
+        from pydantic import ValidationError
+
+        from orchestrator.protocols.hub_v1 import HubCliTaskCreatePayloadV1, HubOpenClawCreatePayloadV1
+
+        if runtime.get("api_version") != "yeying.app/v1" or runtime.get("app_id") != app_id or runtime.get("version") != version:
+            raise ReleaseError("RUNTIME_MANIFEST_MISMATCH")
+        allowed_fields = {"api_version", "kind", "app_id", "version", "runtime_type", "deployment_mode", "schedule", "task", "openclaw", "model"}
+        if set(runtime) - allowed_fields:
+            raise ReleaseError("INVALID_AGENT_RUNTIME")
+        runtime_type = runtime.get("runtime_type")
+        if runtime_type not in AGENT_RUNTIME_TYPES:
+            raise ReleaseError("UNSUPPORTED_AGENT_RUNTIME")
+        deployment_mode = runtime.get("deployment_mode", "scheduled")
+        schedule = runtime.get("schedule")
+        model = runtime.get("model")
+        if model is not None and not isinstance(model, str):
+            raise ReleaseError("INVALID_AGENT_RUNTIME")
+        name = self._display_name(application, app_id)
+        try:
+            if runtime_type == "openclaw":
+                openclaw = runtime.get("openclaw")
+                if runtime.get("task") is not None or not isinstance(openclaw, dict) or set(openclaw) - {"kind", "template"}:
+                    raise ReleaseError("INVALID_AGENT_RUNTIME")
+                if openclaw.get("kind") != "whatsapp":
+                    raise ReleaseError("UNSUPPORTED_AGENT_WORKLOAD")
+                payload = HubOpenClawCreatePayloadV1(
+                    kind="whatsapp",
+                    name=name,
+                    model=model,
+                    template=openclaw.get("template"),
+                    deployment_mode=deployment_mode,
+                    schedule=schedule,
+                )
+            else:
+                task = runtime.get("task")
+                if runtime.get("openclaw") is not None or not isinstance(task, dict):
+                    raise ReleaseError("INVALID_AGENT_RUNTIME")
+                if set(task) - {"prompt", "codex_sandbox", "claude_permission_mode", "run_timeout_seconds"}:
+                    raise ReleaseError("INVALID_AGENT_RUNTIME")
+                if runtime_type == "codex" and task.get("claude_permission_mode") is not None:
+                    raise ReleaseError("INVALID_AGENT_RUNTIME")
+                if runtime_type == "claude-code" and task.get("codex_sandbox") is not None:
+                    raise ReleaseError("INVALID_AGENT_RUNTIME")
+                payload = HubCliTaskCreatePayloadV1(
+                    kind="cli_task",
+                    name=name,
+                    model=model,
+                    deployment_mode=deployment_mode,
+                    schedule=schedule,
+                    **task,
+                )
+        except ValidationError as exc:
+            raise ReleaseError("INVALID_AGENT_RUNTIME") from exc
+        except TypeError as exc:
+            raise ReleaseError("INVALID_AGENT_RUNTIME") from exc
+        return VerifiedAgentRelease(
+            app_id=app_id,
+            version=version,
+            release_digest=digest,
+            runtime_type=runtime_type,
+            deployment_mode=payload.deployment_mode.value,
+            create_payload=payload.model_dump(mode="json"),
+            files=dict(files),
+            application=application,
+            runtime=runtime,
+        )
 
     def _validate_runtime(
         self,
