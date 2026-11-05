@@ -1,4 +1,6 @@
 from .schemas import (
+    CliTaskSpec,
+    CliTaskView,
     InstanceSchedule,
     ScheduledRunListResponse,
     ScheduledRunView,

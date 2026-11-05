@@ -28,6 +28,9 @@ from orchestrator.config import Settings
 from orchestrator.db import init_database
 from orchestrator.hub_client import HubClient, HubClientConfig, HttpHubTransport
 from orchestrator.hub_client.openclaw_adapter import OpenClawAdapter
+from orchestrator.hub_client.cli_adapter import CodexAdapter
+
+from test_cli_adapters import FAKE_CODEX, _write_executable
 from orchestrator.hub_client.simulated import SimulatedAdapter
 from orchestrator.models import AuthSessionView, BotInstanceCreateRequest
 from orchestrator.storage import AgentInstance, MachineHub, MachineHubCommand, RuntimeNode, sessions_for
@@ -950,6 +953,128 @@ class PublicAuthApiTest(unittest.TestCase):
         local_raw = adapter.service.get_instance_raw(instance_id)[1]
         self.assertEqual(local_raw["deployment_mode"], "scheduled")
         self.assertEqual(local_raw["status"], "completed")
+
+    def test_runtime_console_creates_and_runs_a_codex_task_through_hub(self) -> None:
+        self.start_server("never", use_database=True, hub_id="runtime-cli-hub")
+        owner = Account.create()
+        owner_headers = self.login(owner)
+        other_headers = self.login(Account.create())
+        status, issued, _ = self.request(
+            "/api/v1/internal/hubs/runtime-cli-hub/credentials",
+            method="POST",
+            payload={},
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
+        self.assertEqual(status, 200)
+        root = Path(self.tmpdir.name)
+        (root / "bin").mkdir(exist_ok=True)
+        codex = CodexAdapter(root / "codex-state.json", root / "codex-instances", binary=_write_executable(root / "bin" / "codex", FAKE_CODEX))
+        hub_client = HubClient(
+            HubClientConfig.local("runtime-cli-hub", "0.1.0", root / "runtime-cli.sqlite3"),
+            HttpHubTransport(self.base, "runtime-cli-hub", issued["token"]),
+            [OpenClawAdapter.from_settings(self.settings), codex],
+        )
+        self.addCleanup(hub_client.close)
+        hub_client.run_once()
+
+        keep_running = threading.Event()
+        keep_running.set()
+        hub_errors: list[BaseException] = []
+
+        def run_hub() -> None:
+            while keep_running.is_set():
+                try:
+                    hub_client.run_once()
+                except BaseException as exc:  # noqa: BLE001
+                    hub_errors.append(exc)
+                    return
+                time.sleep(0.05)
+
+        hub_thread = threading.Thread(target=run_hub, daemon=True)
+        hub_thread.start()
+
+        status, providers, _ = self.request("/api/v1/public/runtime/providers", headers=owner_headers)
+        self.assertEqual(status, 200)
+        by_id = {item["id"]: item for item in providers["items"]}
+        self.assertEqual(providers["items"][0]["id"], "openclaw")
+        self.assertEqual(by_id["codex"]["availability"], "configured")
+        self.assertIn("run_instance_once", by_id["codex"]["capabilities"])
+        self.assertNotIn("claude-code", by_id)
+
+        # Validation happens before any Hub command: missing task, wrong policy field, unknown runtime.
+        base = {"runtime_type": "codex", "kind": "cli_task", "name": "Nightly digest", "deployment_mode": "scheduled", "schedule": {"kind": "interval", "seconds": 60}}
+        status, _, _ = self.request("/api/v1/public/runtime/instances", method="POST", payload=base, headers=owner_headers)
+        self.assertEqual(status, 422)
+        status, _, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={**base, "runtime_type": "claude-code", "task": {"prompt": "Say OK", "codex_sandbox": "read-only"}},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 422)
+        status, _, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={**base, "runtime_type": "hermes", "kind": "agent"},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 400)
+
+        status, created, _ = self.request(
+            "/api/v1/public/runtime/instances",
+            method="POST",
+            payload={**base, "task": {"prompt": "Say OK", "codex_sandbox": "workspace-write", "run_timeout_seconds": 60}},
+            headers=owner_headers,
+        )
+        self.assertEqual(status, 200, created)
+        assert isinstance(created, dict)
+        instance_id = created["id"]
+        self.assertTrue(instance_id.startswith("codex-"))
+        self.assertEqual((created["runtime_type"], created["workload_type"], created["deployment_mode"]), ("codex", "cli_task", "scheduled"))
+        self.assertEqual(created["task"], {"prompt": "Say OK", "policy": "workspace-write", "run_timeout_seconds": 60})
+        self.assertEqual(created["endpoint"], "")
+        self.assertEqual(created["desired_state"], "stopped")
+        for capability in ("start", "stop", "run-once"):
+            self.assertIn(capability, created["capabilities"])
+        self.assertNotIn("logs", created["capabilities"])
+        self.assertEqual(created["hub_id"], "runtime-cli-hub")
+
+        status, listing, _ = self.request("/api/v1/public/runtime/instances", headers=owner_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual([item["runtime_type"] for item in listing["items"]], ["codex"])
+        status, foreign, _ = self.request("/api/v1/public/runtime/instances", headers=other_headers)
+        self.assertEqual((status, foreign["total"]), (200, 0))
+        status, _, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/runs", headers=other_headers)
+        self.assertEqual(status, 404)
+
+        status, enabled, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/actions/start", method="POST", payload={}, headers=owner_headers)
+        self.assertEqual(status, 200, enabled)
+        self.assertEqual((enabled["message"], enabled["instance"]["desired_state"]), ("schedule enabled", "running"))
+        self.assertTrue(codex.schedule_enabled(instance_id))
+
+        status, ran, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/actions/run", method="POST", payload={}, headers=owner_headers)
+        self.assertEqual(status, 200, ran)
+        self.assertEqual(ran["instance"]["latest_run_state"], "succeeded")
+        self.assertEqual(ran["instance"]["observed_state"], "completed")
+        status, runs, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/runs", headers=owner_headers)
+        self.assertEqual((status, runs["total"]), (200, 1))
+        self.assertEqual((runs["items"][0]["id"], runs["items"][0]["state"], runs["items"][0]["exit_code"]), (ran["run_id"], "succeeded", 0))
+        argv = json.loads((Path(codex.store.load()[instance_id]["workspace_dir"]) / "argv.json").read_text(encoding="utf-8"))
+        self.assertEqual(argv[argv.index("-s") + 1], "workspace-write")
+        self.assertFalse(any(item.startswith("--dangerously") for item in argv))
+
+        status, disabled, _ = self.request(f"/api/v1/public/runtime/instances/{instance_id}/actions/stop", method="POST", payload={}, headers=owner_headers)
+        self.assertEqual((status, disabled["message"]), (200, "schedule disabled"))
+
+        keep_running.clear()
+        hub_thread.join(timeout=2)
+        self.assertFalse(hub_thread.is_alive())
+        self.assertEqual(hub_errors, [])
+        with sessions_for(self.settings.database_url)() as db_session:
+            catalog_instance = db_session.get(AgentInstance, instance_id)
+            self.assertEqual((catalog_instance.runtime_type, catalog_instance.kind, catalog_instance.owner_id), ("codex", "cli_task", owner.address))
+            self.assertEqual(catalog_instance.config_json["prompt"], "Say OK")
+            self.assertEqual(catalog_instance.observed_state, "completed")
 
     def test_internal_runtime_requires_token_and_records_lifecycle_task(self) -> None:
         self.start_server("never")

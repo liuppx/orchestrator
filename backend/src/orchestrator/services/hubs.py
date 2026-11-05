@@ -608,6 +608,11 @@ class MachineHubService:
             raise RuntimeError("Hub status storage is unavailable") from exc
 
     def adapter_capabilities(self, hub_id: str, runtime_type: str) -> list[str]:
+        adapter = next((item for item in self.adapter_catalog(hub_id) if item["runtime_type"] == runtime_type), None)
+        return list(adapter["capabilities"]) if adapter else []
+
+    def adapter_catalog(self, hub_id: str) -> list[dict[str, object]]:
+        """Runtime Adapters the Hub reported in its last heartbeat; empty when the Hub is not online."""
         try:
             with self.sessions() as session:
                 hub = session.get(MachineHub, hub_id)
@@ -616,12 +621,101 @@ class MachineHubService:
                 if (datetime.now(UTC) - _utc(hub.last_seen_at)).total_seconds() > 90:
                     return []
                 adapters = (hub.metadata_json or {}).get("adapters", [])
-                adapter = next((item for item in adapters if item.get("runtime_type") == runtime_type), None)
-                if adapter is None:
-                    return []
-                return list(adapter.get("capabilities", []))
+                return [
+                    {
+                        "runtime_type": str(item.get("runtime_type") or ""),
+                        "adapter_version": item.get("adapter_version"),
+                        "runtime_version": item.get("runtime_version"),
+                        "capabilities": list(item.get("capabilities", [])),
+                    }
+                    for item in adapters
+                    if isinstance(item, dict) and item.get("runtime_type")
+                ]
         except SQLAlchemyError as exc:
             raise RuntimeError("Hub adapter storage is unavailable") from exc
+
+    # --- runtime-agnostic instance catalog ------------------------------------------
+
+    @staticmethod
+    def _catalog_capabilities(row: AgentInstance) -> list[str]:
+        if row.runtime_type == "openclaw":
+            capabilities = ["start", "stop", "logs", "diagnose"]
+            if row.kind == "whatsapp":
+                capabilities.append("channel-pairing")
+        else:
+            # start/stop enable/disable the schedule; CLI runtimes expose no gateway logs or diagnosis.
+            capabilities = ["start", "stop"]
+        if (row.deployment_mode or "service") == "scheduled":
+            capabilities.append("run-once")
+        return capabilities
+
+    def _catalog_view(self, session, row: AgentInstance) -> dict[str, object]:
+        from orchestrator.services.openclaw import short_wallet
+
+        config = dict(row.config_json or {})
+        hub = session.get(MachineHub, row.node_id)
+        latest = session.scalar(
+            select(MachineHubCommand)
+            .where(MachineHubCommand.hub_id == row.node_id, MachineHubCommand.target_instance_id == row.id)
+            .order_by(MachineHubCommand.created_at.desc())
+            .limit(1)
+        )
+        latest_run = session.scalar(
+            select(ScheduledRun).where(ScheduledRun.instance_id == row.id).order_by(ScheduledRun.scheduled_for.desc()).limit(1)
+        )
+        task = None
+        if row.kind == "cli_task":
+            task = {
+                "prompt": str(config.get("prompt") or ""),
+                "policy": config.get("codex_sandbox") or config.get("claude_permission_mode"),
+                "run_timeout_seconds": int(config.get("run_timeout_seconds") or 900),
+            }
+        return {
+            "id": row.id,
+            "owner_id": row.owner_id,
+            "name": row.name or row.id,
+            "runtime_type": row.runtime_type,
+            "workload_type": row.kind,
+            "model": str(config.get("model") or ""),
+            "desired_state": row.desired_state if row.desired_state in {"running", "stopped"} else "unknown",
+            "observed_state": row.observed_state or "unknown",
+            "owner_wallet": short_wallet(row.owner_id),
+            "endpoint": f"http://127.0.0.1:{row.port}" if row.port else "",
+            "process_id": row.pid,
+            "last_error": row.last_error,
+            "created_at": _utc(row.created_at).isoformat(),
+            "updated_at": _utc(row.updated_at).isoformat(),
+            "capabilities": self._catalog_capabilities(row),
+            "deployment_mode": row.deployment_mode or "service",
+            "schedule": row.schedule_json,
+            "task": task,
+            "hub_id": row.node_id,
+            "hub_status": hub.status if hub is not None else "unknown",
+            "hub_last_seen_at": _utc(hub.last_seen_at).isoformat() if hub and hub.last_seen_at else None,
+            "latest_command_status": latest.status if latest is not None else None,
+            "latest_command_operation": latest.operation if latest is not None else None,
+            "latest_command_updated_at": _utc(latest.updated_at).isoformat() if latest is not None else None,
+            "schedule_executed": latest_run is not None,
+            "latest_run_state": latest_run.state if latest_run is not None else None,
+            "latest_run_at": _utc(latest_run.scheduled_for).isoformat() if latest_run is not None else None,
+        }
+
+    def list_catalog_instances(self) -> list[dict[str, object]]:
+        """Every catalog instance regardless of runtime; callers apply ownership filtering."""
+        try:
+            with self.sessions() as session:
+                rows = session.scalars(select(AgentInstance).order_by(AgentInstance.created_at.desc())).all()
+                return [self._catalog_view(session, row) for row in rows]
+        except SQLAlchemyError as exc:
+            raise RuntimeError("instance catalog storage is unavailable") from exc
+
+    def catalog_instance(self, instance_id: str) -> dict[str, object] | None:
+        try:
+            with self.sessions() as session:
+                row = session.get(AgentInstance, instance_id)
+                return self._catalog_view(session, row) if row is not None else None
+        except SQLAlchemyError as exc:
+            raise RuntimeError("instance catalog storage is unavailable") from exc
 
     def command_status(self, hub_id: str, command_id: str) -> dict | None:
         try:
@@ -878,39 +972,39 @@ class MachineHubService:
                             command.updated_at = now
                             if event.phase.value in TERMINAL_COMMAND_PHASES:
                                 command.lease_expires_at = None
-                                if command.runtime_type == "openclaw":
-                                    catalog_instance = session.get(
-                                        AgentInstance,
-                                        command.target_instance_id,
-                                        with_for_update=True,
-                                    )
-                                    if catalog_instance is not None:
-                                        observed_state = event.observed_state.value if event.observed_state else None
-                                        if observed_state:
-                                            catalog_instance.observed_state = observed_state
-                                        elif event.phase.value == "failed":
-                                            catalog_instance.observed_state = "error"
-                                        elif event.phase.value == "unknown":
-                                            catalog_instance.observed_state = "unknown"
-                                        if event.phase.value == "succeeded":
-                                            catalog_instance.last_error = None
-                                        elif event.error_code:
-                                            catalog_instance.last_error = event.error_code
-                                        if event.phase.value == "succeeded" and event.result is not None:
-                                            if event.result.kind == "model_updated":
-                                                config = dict(catalog_instance.config_json or {})
-                                                config["model"] = event.result.model
-                                                catalog_instance.config_json = config
-                                            elif event.result.kind == "instance_deleted":
-                                                session.execute(
-                                                    delete(InstanceConfig).where(
-                                                        InstanceConfig.instance_id == catalog_instance.id
-                                                    )
+                                # Every Hub runtime reports through the same command events; mirror them all.
+                                catalog_instance = session.get(
+                                    AgentInstance,
+                                    command.target_instance_id,
+                                    with_for_update=True,
+                                )
+                                if catalog_instance is not None:
+                                    observed_state = event.observed_state.value if event.observed_state else None
+                                    if observed_state:
+                                        catalog_instance.observed_state = observed_state
+                                    elif event.phase.value == "failed":
+                                        catalog_instance.observed_state = "error"
+                                    elif event.phase.value == "unknown":
+                                        catalog_instance.observed_state = "unknown"
+                                    if event.phase.value == "succeeded":
+                                        catalog_instance.last_error = None
+                                    elif event.error_code:
+                                        catalog_instance.last_error = event.error_code
+                                    if event.phase.value == "succeeded" and event.result is not None:
+                                        if event.result.kind == "model_updated":
+                                            config = dict(catalog_instance.config_json or {})
+                                            config["model"] = event.result.model
+                                            catalog_instance.config_json = config
+                                        elif event.result.kind == "instance_deleted":
+                                            session.execute(
+                                                delete(InstanceConfig).where(
+                                                    InstanceConfig.instance_id == catalog_instance.id
                                                 )
-                                                session.delete(catalog_instance)
-                                                catalog_instance = None
-                                        if catalog_instance is not None:
-                                            catalog_instance.updated_at = now
+                                            )
+                                            session.delete(catalog_instance)
+                                            catalog_instance = None
+                                    if catalog_instance is not None:
+                                        catalog_instance.updated_at = now
                             else:
                                 command.lease_expires_at = now + timedelta(seconds=COMMAND_LEASE_SECONDS)
                     elif isinstance(event, HubScheduledRunEventV1):

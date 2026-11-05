@@ -275,6 +275,21 @@ class RuntimeProviderListResponse(BaseModel):
     items: list[RuntimeProviderView]
 
 
+class CliTaskSpec(BaseModel):
+    """Definition of a one-shot CLI agent task; the prompt is fixed per instance, never per run."""
+
+    prompt: str = Field(min_length=1, max_length=8192)
+    codex_sandbox: Literal["read-only", "workspace-write"] | None = None
+    claude_permission_mode: Literal["plan", "acceptEdits", "dontAsk"] | None = None
+    run_timeout_seconds: int = Field(default=900, ge=30, le=86_400)
+
+
+class CliTaskView(BaseModel):
+    prompt: str
+    policy: str | None
+    run_timeout_seconds: int
+
+
 class RuntimeInstanceView(BaseModel):
     id: str
     name: str
@@ -296,6 +311,7 @@ class RuntimeInstanceView(BaseModel):
     schedule_executed: bool = False
     latest_run_state: str | None = None
     latest_run_at: str | None = None
+    task: CliTaskView | None = None
     hub_id: str | None = None
     hub_status: str = "unknown"
     hub_last_seen_at: str | None = None
@@ -336,6 +352,26 @@ class RuntimeInstanceActionResponse(BaseModel):
 
 class RuntimeInstanceCreateRequest(BotInstanceCreateRequest):
     runtime_type: str = "openclaw"
+    task: CliTaskSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_runtime_shape(self) -> "RuntimeInstanceCreateRequest":
+        if self.runtime_type in {"codex", "claude-code"}:
+            if self.task is None:
+                raise ValueError("CLI task runtimes require a task definition")
+            if self.kind != "cli_task":
+                raise ValueError("CLI task instances use kind=cli_task")
+            if self.deployment_mode != "scheduled":
+                raise ValueError("CLI task instances are always scheduled")
+            if self.runtime_type == "codex" and self.task.claude_permission_mode is not None:
+                raise ValueError("claude_permission_mode does not apply to the codex runtime")
+            if self.runtime_type == "claude-code" and self.task.codex_sandbox is not None:
+                raise ValueError("codex_sandbox does not apply to the claude-code runtime")
+            if self.dingtalk_client_id or self.dingtalk_client_secret or self.template:
+                raise ValueError("messenger fields do not apply to CLI task runtimes")
+        elif self.task is not None:
+            raise ValueError("task definitions apply only to CLI task runtimes")
+        return self
 
 
 class ScheduledRunView(BaseModel):

@@ -151,6 +151,25 @@ class InstanceScheduleSchemaTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RuntimeInstanceCreateRequest.model_validate({**base, "deployment_mode": "cron"})
 
+    def test_cli_task_requests_require_a_task_and_matching_policy(self) -> None:
+        base = {"runtime_type": "codex", "kind": "cli_task", "name": "Nightly", "deployment_mode": "scheduled", "schedule": {"kind": "interval", "seconds": 600}}
+        request = RuntimeInstanceCreateRequest.model_validate({**base, "task": {"prompt": "Say OK", "codex_sandbox": "read-only"}})
+        self.assertEqual(request.task.run_timeout_seconds, 900)
+        with self.assertRaisesRegex(ValidationError, "require a task definition"):
+            RuntimeInstanceCreateRequest.model_validate(base)
+        with self.assertRaisesRegex(ValidationError, "kind=cli_task"):
+            RuntimeInstanceCreateRequest.model_validate({**base, "kind": "whatsapp", "task": {"prompt": "x"}})
+        with self.assertRaisesRegex(ValidationError, "always scheduled"):
+            RuntimeInstanceCreateRequest.model_validate({**base, "deployment_mode": "service", "schedule": None, "task": {"prompt": "x"}})
+        with self.assertRaisesRegex(ValidationError, "does not apply to the codex runtime"):
+            RuntimeInstanceCreateRequest.model_validate({**base, "task": {"prompt": "x", "claude_permission_mode": "plan"}})
+        with self.assertRaisesRegex(ValidationError, "messenger fields do not apply"):
+            RuntimeInstanceCreateRequest.model_validate({**base, "template": "generic", "task": {"prompt": "x"}})
+        with self.assertRaisesRegex(ValidationError, "apply only to CLI task runtimes"):
+            RuntimeInstanceCreateRequest.model_validate({"runtime_type": "openclaw", "kind": "whatsapp", "name": "Bot", "task": {"prompt": "x"}})
+        with self.assertRaises(ValidationError):
+            RuntimeInstanceCreateRequest.model_validate({**base, "task": {"prompt": "x", "codex_sandbox": "danger-full-access"}})
+
     def test_instance_view_defaults_keep_schedules_marked_as_not_executed(self) -> None:
         view = RuntimeInstanceView(
             id="i",

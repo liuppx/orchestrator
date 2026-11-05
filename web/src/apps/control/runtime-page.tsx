@@ -9,11 +9,20 @@ import { useRuntimeHubs, useRuntimeInstanceDiagnose, useRuntimeInstanceLogs, use
 import { useRuntimeInstanceAction } from '../../platform/agents/mutations'
 import { scheduleLabel } from '../../platform/core/schedule'
 import type { RunState, RuntimeInstance, ScheduledRun } from '../../platform/core/types'
+import { CreateTaskPanel } from './create-task-panel'
 
 type StatusFilter = 'all' | 'running' | 'stopped' | 'attention'
 
 const EMPTY_INSTANCES: RuntimeInstance[] = []
 const EMPTY_RUNS: ScheduledRun[] = []
+
+function runtimeLabel(value: string) {
+  return ({ openclaw: 'OpenClaw', codex: 'Codex CLI', 'claude-code': 'Claude Code CLI' } as Record<string, string>)[value] ?? value
+}
+
+function workloadLabel(value: string) {
+  return value === 'cli_task' ? 'CLI 任务' : value
+}
 
 function stateLabel(value: string) {
   const labels: Record<string, string> = {
@@ -72,8 +81,10 @@ export function RuntimePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const instances = query.data?.items ?? EMPTY_INSTANCES
   const selected = instances.find((item) => item.id === selectedId) ?? instances[0] ?? null
-  const logsQuery = useRuntimeInstanceLogs(selected?.id ?? null)
-  const diagnoseQuery = useRuntimeInstanceDiagnose(selected?.id ?? null)
+  // Gateway logs and diagnosis exist only for OpenClaw; CLI tasks expose per-run logs instead.
+  const openclawSelectedId = selected?.runtime_type === 'openclaw' ? selected.id : null
+  const logsQuery = useRuntimeInstanceLogs(openclawSelectedId)
+  const diagnoseQuery = useRuntimeInstanceDiagnose(openclawSelectedId)
   const runsQuery = useScheduledRuns(selected?.deployment_mode === 'scheduled' ? selected.id : null)
   const runs = runsQuery.data?.items ?? EMPTY_RUNS
   const runtimeAction = useRuntimeInstanceAction()
@@ -129,6 +140,8 @@ export function RuntimePage() {
         ))}
       </section>
 
+      <CreateTaskPanel />
+
       <section className="surface-section runtime-surface">
         <div className="runtime-toolbar">
           <div className="segmented" role="group" aria-label="按状态筛选">
@@ -160,8 +173,8 @@ export function RuntimePage() {
                 <tr key={instance.id} className={selected?.id === instance.id ? 'selected-row' : ''}>
                   <td><button className="instance-name" type="button" onClick={() => setSelectedId(instance.id)}>{instance.name}<small>{instance.id}</small></button></td>
                   <td><div className="hub-cell"><strong>{instance.hub_id ?? '未分配'}</strong><span><CommandIcon status={instance.latest_command_status} />{commandStateLabel(instance.latest_command_status)}</span></div></td>
-                  <td>{instance.runtime_type}</td>
-                  <td><div className="state-pair"><span>{instance.workload_type}</span>{instance.deployment_mode === 'scheduled' ? <Badge variant="muted"><CalendarClock className="mr-1 h-3 w-3" aria-hidden="true" />定时任务</Badge> : null}</div></td>
+                  <td>{runtimeLabel(instance.runtime_type)}</td>
+                  <td><div className="state-pair"><span>{workloadLabel(instance.workload_type)}</span>{instance.deployment_mode === 'scheduled' ? <Badge variant="muted"><CalendarClock className="mr-1 h-3 w-3" aria-hidden="true" />定时任务</Badge> : null}</div></td>
                   <td>
                     {instance.deployment_mode === 'scheduled' ? (
                       <div className="state-pair">
@@ -175,7 +188,7 @@ export function RuntimePage() {
                     )}
                   </td>
                   <td className="model-cell">{instance.model || '—'}</td>
-                  <td><code>{instance.endpoint.replace('http://', '')}</code></td>
+                  <td>{instance.endpoint ? <code>{instance.endpoint.replace('http://', '')}</code> : '—'}</td>
                   <td>
                     {instance.deployment_mode === 'scheduled' ? (
                       <div className="flex flex-wrap gap-2">
@@ -227,13 +240,13 @@ export function RuntimePage() {
               </div>
               <div className="runtime-mobile-meta">
                 <div><span>机器 Hub</span><strong>{instance.hub_id ?? '未分配'}</strong></div>
-                <div><span>运行时</span><strong>{instance.runtime_type} / {instance.workload_type}</strong></div>
+                <div><span>运行时</span><strong>{runtimeLabel(instance.runtime_type)} / {workloadLabel(instance.workload_type)}</strong></div>
                 {instance.deployment_mode === 'scheduled' ? <div><span>计划</span><strong>{scheduleLabel(instance.schedule)} · {scheduleEnabled(instance) ? '已启用' : '未启用'}</strong></div> : null}
                 <div><span>最近命令</span><strong><CommandIcon status={instance.latest_command_status} />{commandStateLabel(instance.latest_command_status)}</strong></div>
                 <div><span>模型</span><strong>{instance.model || '—'}</strong></div>
               </div>
               <div className="runtime-mobile-card-footer">
-                <code>{instance.endpoint.replace('http://', '')}</code>
+                {instance.endpoint ? <code>{instance.endpoint.replace('http://', '')}</code> : <span className="text-xs text-slate-500">{runtimeLabel(instance.runtime_type)}</span>}
                 {instance.deployment_mode === 'scheduled' ? (
                   <div className="flex flex-wrap gap-2">
                     {scheduleEnabled(instance) ? (
@@ -257,8 +270,8 @@ export function RuntimePage() {
       {selected ? (
         <section className="surface-section detail-section" aria-labelledby="runtime-detail-heading">
           <div className="section-heading">
-            <div><h2 id="runtime-detail-heading">{selected.name}</h2><p>{selected.id} · PID {selected.process_id ?? '—'} · 更新于 {new Date(selected.updated_at).toLocaleString()}</p></div>
-            <Link to="/agents/messenger" className="text-link">打开消息工作台 <ArrowUpRight className="h-4 w-4" /></Link>
+            <div><h2 id="runtime-detail-heading">{selected.name}</h2><p>{selected.id} · {runtimeLabel(selected.runtime_type)}{selected.process_id ? ` · PID ${selected.process_id}` : ''} · 更新于 {new Date(selected.updated_at).toLocaleString()}</p></div>
+            {selected.runtime_type === 'openclaw' ? <Link to="/agents/messenger" className="text-link">打开消息工作台 <ArrowUpRight className="h-4 w-4" /></Link> : null}
           </div>
           {selected.last_error ? <div className="inline-error" role="alert"><CircleAlert className="h-4 w-4" />{selected.last_error}</div> : null}
           <div className="detail-grid">
@@ -268,9 +281,16 @@ export function RuntimePage() {
             <div><span>观测状态</span><strong>{selected.deployment_mode === 'scheduled' ? (selected.schedule_executed ? `上次运行${runStateLabel(selected.latest_run_state)}` : '尚未运行') : stateLabel(selected.observed_state)}</strong></div>
             <div><span>机器 Hub</span><strong>{selected.hub_id ?? '未分配'} · {hubStateLabel(selected.hub_status)}</strong></div>
             <div><span>最近命令</span><strong>{commandStateLabel(selected.latest_command_status)}</strong></div>
-            <div><span>本机地址</span><code>{selected.endpoint}</code></div>
-            <div><span>诊断建议</span><strong>{diagnoseQuery.data?.recommended_action || (diagnoseQuery.isLoading ? '检查中…' : '暂无')}</strong></div>
+            {selected.endpoint ? <div><span>本机地址</span><code>{selected.endpoint}</code></div> : null}
+            {selected.runtime_type === 'openclaw' ? <div><span>诊断建议</span><strong>{diagnoseQuery.data?.recommended_action || (diagnoseQuery.isLoading ? '检查中…' : '暂无')}</strong></div> : null}
+            {selected.task ? <div><span>执行策略</span><strong>{selected.task.policy ?? '默认'} · 超时 {Math.round(selected.task.run_timeout_seconds / 60)} 分钟</strong></div> : null}
           </div>
+          {selected.task ? (
+            <>
+              <div className="log-heading"><Terminal className="h-4 w-4" /><span>任务提示词</span><span>每次运行执行同一任务</span></div>
+              <pre className="runtime-log">{selected.task.prompt}</pre>
+            </>
+          ) : null}
           {selected.deployment_mode === 'scheduled' ? (
             <>
               <div className="log-heading">
@@ -305,8 +325,12 @@ export function RuntimePage() {
               ) : null}
             </>
           ) : null}
-          <div className="log-heading"><Terminal className="h-4 w-4" /><span>最近运行日志</span><span>自动刷新</span></div>
-          <pre className="runtime-log">{logsQuery.data?.gateway_log || (logsQuery.isLoading ? '正在读取日志…' : '暂无日志')}</pre>
+          {selected.runtime_type === 'openclaw' ? (
+            <>
+              <div className="log-heading"><Terminal className="h-4 w-4" /><span>最近运行日志</span><span>自动刷新</span></div>
+              <pre className="runtime-log">{logsQuery.data?.gateway_log || (logsQuery.isLoading ? '正在读取日志…' : '暂无日志')}</pre>
+            </>
+          ) : null}
         </section>
       ) : null}
     </div>

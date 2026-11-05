@@ -15,6 +15,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from orchestrator.adapters import AgentWorkspaceAdapter, get_agent_workspace_adapter
 from orchestrator.config import Settings
 from orchestrator.protocols.hub_v1 import (
+    CLI_RUNTIME_TYPES,
+    HubCliTaskCreatePayloadV1,
     HubCommandIssueRequestV1,
     HubCommandOperation,
     HubInstanceScheduleV1,
@@ -129,6 +131,27 @@ def require_owned_instance(
     return record
 
 
+def require_owned_catalog_instance(hub_service: MachineHubService, instance_id: str, session: AuthSessionView) -> dict:
+    """Runtime-agnostic ownership check against the control-plane catalog."""
+    try:
+        item = hub_service.catalog_instance(instance_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if item is None or not owner_matches_wallet(str(item.get("owner_id") or ""), session.wallet_id):
+        raise HTTPException(status_code=404, detail="instance not found")
+    return item
+
+
+def catalog_view(hub_service: MachineHubService, instance_id: str) -> RuntimeInstanceView:
+    try:
+        item = hub_service.catalog_instance(instance_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="instance not found")
+    return RuntimeInstanceView.model_validate(item)
+
+
 async def dispatch_runtime_instance_action(
     settings: Settings,
     service: OpenClawRuntimeService,
@@ -139,9 +162,9 @@ async def dispatch_runtime_instance_action(
     if action not in {"start", "stop", "run"}:
         raise HTTPException(status_code=404, detail="runtime action not found")
     require_hub_catalog(settings)
-    require_owned_instance(service, instance_id, session)
-    current = service.get_instance(instance_id)
-    scheduled = current is not None and current.deployment_mode == "scheduled"
+    hub_service = MachineHubService(settings.database_url)
+    current = require_owned_catalog_instance(hub_service, instance_id, session)
+    scheduled = current.get("deployment_mode") == "scheduled"
     run_id: str | None = None
     if action == "run":
         if not scheduled:
@@ -156,13 +179,13 @@ async def dispatch_runtime_instance_action(
             HubCommandOperation.RUN_INSTANCE_ONCE,
             operation_payload=payload,
             timeout_seconds=min(payload.timeout_seconds, 300),
+            runtime_type=str(current["runtime_type"]),
         )
     else:
         operation = HubCommandOperation.START_INSTANCE if action == "start" else HubCommandOperation.STOP_INSTANCE
-        await dispatch_owned_instance_command(settings, service, instance_id, session, operation)
-    result = service.get_instance(instance_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="instance not found")
+        await dispatch_owned_instance_command(
+            settings, service, instance_id, session, operation, runtime_type=str(current["runtime_type"])
+        )
     if scheduled:
         # For scheduled instances start/stop enable/disable the schedule; nothing is launched.
         message = {"start": "schedule enabled", "stop": "schedule disabled", "run": "run completed by Machine Hub"}[action]
@@ -170,7 +193,7 @@ async def dispatch_runtime_instance_action(
         message = f"{action} completed by Machine Hub"
     return RuntimeInstanceActionResponse(
         message=message,
-        instance=runtime_instance_view_with_hub(MachineHubService(settings.database_url), result),
+        instance=catalog_view(hub_service, instance_id),
         run_id=run_id,
     )
 
@@ -183,11 +206,12 @@ async def dispatch_owned_instance_command(
     operation: HubCommandOperation,
     operation_payload: object | None = None,
     timeout_seconds: int = 30,
+    runtime_type: str | None = None,
 ) -> dict:
     require_hub_catalog(settings)
-    require_owned_instance(service, instance_id, session)
+    hub_service = MachineHubService(settings.database_url)
+    catalog = require_owned_catalog_instance(hub_service, instance_id, session)
     try:
-        hub_service = MachineHubService(settings.database_url)
         hub_id = hub_service.instance_hub_id(instance_id)
         if not hub_id:
             raise HTTPException(status_code=404, detail="instance not found")
@@ -195,7 +219,7 @@ async def dispatch_owned_instance_command(
             raise HTTPException(status_code=503, detail="Machine Hub is offline")
         command_request = HubCommandIssueRequestV1(
             target_instance_id=instance_id,
-            runtime_type="openclaw",
+            runtime_type=runtime_type or str(catalog["runtime_type"]),
             operation=operation,
             idempotency_key=f"instance-command-{uuid4().hex}",
             desired_revision=hub_service.next_desired_revision(hub_id, instance_id),
@@ -259,44 +283,6 @@ def openclaw_runtime_service(settings: Settings) -> OpenClawRuntimeService:
     )
 
 
-def runtime_instance_view(instance: BotInstanceView) -> RuntimeInstanceView:
-    capabilities = ["start", "stop", "logs", "diagnose"]
-    if instance.kind == "whatsapp":
-        capabilities.append("channel-pairing")
-    if instance.deployment_mode == "scheduled":
-        # start/stop enable/disable the schedule; run-once is the on-demand trigger.
-        capabilities.append("run-once")
-    return RuntimeInstanceView(
-        id=instance.id,
-        name=instance.name or instance.id,
-        runtime_type="openclaw",
-        workload_type=instance.kind,
-        model=instance.model,
-        desired_state=instance.desired_state,
-        observed_state=instance.status,
-        owner_wallet=instance.owner_wallet,
-        endpoint=f"http://127.0.0.1:{instance.port}",
-        process_id=instance.pid,
-        last_error=instance.last_error,
-        created_at=instance.created_at,
-        updated_at=instance.updated_at,
-        capabilities=capabilities,
-        deployment_mode=instance.deployment_mode,
-        schedule=instance.schedule,
-    )
-
-
-def runtime_instance_view_with_hub(
-    hub_service: MachineHubService,
-    instance: BotInstanceView,
-) -> RuntimeInstanceView:
-    view = runtime_instance_view(instance)
-    metadata = hub_service.runtime_instance_metadata(instance.id)
-    if metadata:
-        return view.model_copy(update=metadata)
-    return view
-
-
 def workspace_adapter_for_agent(settings: Settings, agent_key: str) -> AgentWorkspaceAdapter:
     if agent_key == "messenger":
         from orchestrator.adapters.messenger import MessengerWorkspaceAdapter
@@ -351,13 +337,15 @@ async def public_runtime_instances(request: Request) -> RuntimeInstanceListRespo
     session = require_session(request)
     settings = Settings()
     require_hub_catalog(settings)
-    service = openclaw_runtime_service(settings)
-    instances = [
-        item for item in service.list_instances().items
-        if owner_matches_wallet(item.owner_wallet, session.wallet_id)
+    try:
+        catalog = MachineHubService(settings.database_url).list_catalog_instances()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    items = [
+        RuntimeInstanceView.model_validate(item)
+        for item in catalog
+        if owner_matches_wallet(str(item.get("owner_id") or ""), session.wallet_id)
     ]
-    hub_service = MachineHubService(settings.database_url)
-    items = [runtime_instance_view_with_hub(hub_service, item) for item in instances]
     return RuntimeInstanceListResponse(
         items=items,
         total=len(items),
@@ -388,25 +376,98 @@ async def public_create_runtime_instance(
     payload: RuntimeInstanceCreateRequest,
     request: Request,
 ) -> RuntimeInstanceView:
-    if payload.runtime_type != "openclaw":
-        raise HTTPException(status_code=400, detail="runtime_type is not supported")
     settings = Settings()
     session = require_session(request)
-    instance = await create_openclaw_instance_via_hub(
-        settings,
-        BotInstanceCreateRequest(
-            kind=payload.kind,
-            name=payload.name,
-            model=payload.model,
-            template=payload.template,
-            dingtalk_client_id=payload.dingtalk_client_id,
-            dingtalk_client_secret=payload.dingtalk_client_secret,
-            deployment_mode=payload.deployment_mode,
-            schedule=payload.schedule,
-        ),
-        session,
-    )
-    return runtime_instance_view_with_hub(MachineHubService(settings.database_url), instance)
+    require_hub_catalog(settings)
+    hub_service = MachineHubService(settings.database_url)
+    if payload.runtime_type == "openclaw":
+        instance = await create_openclaw_instance_via_hub(
+            settings,
+            BotInstanceCreateRequest(
+                kind=payload.kind,
+                name=payload.name,
+                model=payload.model,
+                template=payload.template,
+                dingtalk_client_id=payload.dingtalk_client_id,
+                dingtalk_client_secret=payload.dingtalk_client_secret,
+                deployment_mode=payload.deployment_mode,
+                schedule=payload.schedule,
+            ),
+            session,
+        )
+        return catalog_view(hub_service, instance.id)
+    if payload.runtime_type in CLI_RUNTIME_TYPES:
+        instance_id = await create_cli_task_instance_via_hub(settings, payload, session)
+        return catalog_view(hub_service, instance_id)
+    raise HTTPException(status_code=400, detail="runtime_type is not supported")
+
+
+async def _await_hub_command(hub_service: MachineHubService, hub_id: str, command_id: str, label: str, timeout_seconds: float = 30) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        command = hub_service.command_status(hub_id, command_id)
+        if command is None:
+            raise HTTPException(status_code=502, detail=f"Hub {label} command disappeared before completion")
+        if command["status"] == "succeeded":
+            return command
+        if command["status"] in {"failed", "rejected", "unknown", "expired", "superseded"}:
+            error_code = command["result"].get("error_code") or command["status"].upper()
+            raise HTTPException(status_code=502, detail=f"Hub {label} command {command['status']}: {error_code}")
+        await asyncio.sleep(0.2)
+    raise HTTPException(status_code=504, detail=f"Hub {label} command is still pending; command_id={command_id}")
+
+
+async def create_cli_task_instance_via_hub(
+    settings: Settings,
+    payload: RuntimeInstanceCreateRequest,
+    session: AuthSessionView,
+) -> str:
+    """Create a scheduled Codex / Claude Code task on the configured Hub; returns the catalog instance id."""
+    if not settings.hub_id or not settings.database_url:
+        raise HTTPException(status_code=503, detail="Machine Hub is not configured for this Backend")
+    assert payload.task is not None and payload.schedule is not None
+    hub_service = MachineHubService(settings.database_url)
+    try:
+        if not hub_service.is_online(settings.hub_id):
+            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        instance_id = f"{payload.runtime_type}-{uuid4().hex}"
+        command_request = HubCommandIssueRequestV1(
+            target_instance_id=instance_id,
+            runtime_type=payload.runtime_type,
+            operation=HubCommandOperation.CREATE_INSTANCE,
+            idempotency_key=f"runtime-create-{uuid4().hex}",
+            desired_revision=1,
+            trace_id=f"runtime-create-{uuid4().hex}",
+            expires_at=datetime.now(UTC) + timedelta(minutes=2),
+            create_payload=HubCliTaskCreatePayloadV1(
+                kind="cli_task",
+                name=payload.name,
+                prompt=payload.task.prompt,
+                model=payload.model,
+                codex_sandbox=payload.task.codex_sandbox,
+                claude_permission_mode=payload.task.claude_permission_mode,
+                run_timeout_seconds=payload.task.run_timeout_seconds,
+                schedule=HubInstanceScheduleV1.model_validate(payload.schedule.model_dump(mode="json")),
+            ),
+        )
+        receipt = hub_service.issue_command(
+            settings.hub_id,
+            command_request,
+            actor=f"wallet:{session.wallet_id}",
+            catalog_owner_id=session.wallet_id,
+        )
+        await _await_hub_command(hub_service, settings.hub_id, str(receipt.command_id), "create")
+        return instance_id
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HubNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HubConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 async def create_openclaw_instance_via_hub(
@@ -518,11 +579,11 @@ async def public_runtime_instance_runs(
 ) -> ScheduledRunListResponse:
     session = require_session(request)
     settings = Settings()
-    service = openclaw_runtime_service(settings)
     require_hub_catalog(settings)
-    require_owned_instance(service, instance_id, session)
+    hub_service = MachineHubService(settings.database_url)
+    require_owned_catalog_instance(hub_service, instance_id, session)
     try:
-        items = MachineHubService(settings.database_url).list_scheduled_runs(instance_id, limit)
+        items = hub_service.list_scheduled_runs(instance_id, limit)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ScheduledRunListResponse(items=[ScheduledRunView(**item) for item in items], total=len(items))

@@ -167,6 +167,26 @@ export type RuntimeInstanceActionResponse = {
   run_id: string | null
 }
 
+export type CliRuntimeType = 'codex' | 'claude-code'
+
+export type CliTaskView = {
+  prompt: string
+  policy: string | null
+  run_timeout_seconds: number
+}
+
+export type CliTaskSpec = {
+  prompt: string
+  codex_sandbox?: 'read-only' | 'workspace-write' | null
+  claude_permission_mode?: 'plan' | 'acceptEdits' | 'dontAsk' | null
+  run_timeout_seconds?: number
+}
+
+export type RuntimeInstanceCreateRequest = BotInstanceCreateRequest & {
+  runtime_type: string
+  task?: CliTaskSpec | null
+}
+
 export type InstanceSchedule = {
   kind: 'cron' | 'interval'
   expr: string | null
@@ -195,6 +215,7 @@ export type RuntimeInstance = {
   schedule_executed: boolean
   latest_run_state: RunState | null
   latest_run_at: string | null
+  task: CliTaskView | null
   hub_id: string | null
   hub_status: string
   hub_last_seen_at: string | null
