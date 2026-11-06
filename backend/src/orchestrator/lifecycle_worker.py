@@ -33,7 +33,14 @@ class ControlPlaneError(RuntimeError):
 
 
 class ControlPlaneClient:
-    def __init__(self, base_url: str, token: str, worker_id: str, timeout_seconds: int = 15) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        worker_id: str,
+        timeout_seconds: int = 15,
+        target_hub_id: str | None = None,
+    ) -> None:
         parsed = urllib.parse.urlsplit(str(base_url or "").strip().rstrip("/"))
         if (
             parsed.scheme not in {"http", "https"}
@@ -51,6 +58,8 @@ class ControlPlaneClient:
         self.token = token.strip()
         self.worker_id = worker_id
         self.timeout_seconds = max(1, min(int(timeout_seconds), 120))
+        # Optional placement target; empty means "let the control plane choose".
+        self.target_hub_id = (target_hub_id or "").strip() or None
         self.opener = urllib.request.build_opener(_NoRedirect())
 
     def post(self, path: str, body: dict[str, Any] | None = None, attempt: int | None = None) -> dict[str, Any]:
@@ -130,7 +139,13 @@ class ControlPlaneClient:
         try:
             return self.post(
                 "/api/v1/internal/runtime/instances",
-                {"owner_id": owner_id, "runtime_type": runtime_type, "instance_id": instance_id, "create_payload": create_payload},
+                {
+                    "owner_id": owner_id,
+                    "runtime_type": runtime_type,
+                    "instance_id": instance_id,
+                    "create_payload": create_payload,
+                    "target_hub_id": self.target_hub_id,
+                },
             )
         except ControlPlaneError as exc:
             raise self._gateway_error(exc) from exc
@@ -281,7 +296,12 @@ def build_worker(settings: Settings) -> LifecycleWorker:
     if not trusted_keys:
         raise ValueError("NODE_TRUSTED_PUBLISHER_KEYS must contain at least one publisher key")
     worker_id = settings.worker_id.strip() or f"runtime-{uuid4().hex}"
-    control = ControlPlaneClient(settings.worker_api_url, settings.worker_token, worker_id)
+    control = ControlPlaneClient(
+        settings.worker_api_url,
+        settings.worker_token,
+        worker_id,
+        target_hub_id=settings.worker_target_hub_id,
+    )
     registry = NodeRegistryClient(
         settings.node_registry_url,
         settings.node_runtime_instance_id,

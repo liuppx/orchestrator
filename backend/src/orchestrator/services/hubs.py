@@ -53,6 +53,10 @@ class HubConflictError(HubServiceError):
     pass
 
 
+class HubUnavailableError(HubServiceError):
+    """The target machine is temporarily unreachable (offline); the request may be retried."""
+
+
 class HubAuthenticationError(HubServiceError):
     pass
 
@@ -592,11 +596,72 @@ class MachineHubService:
                         "last_seen_at": _utc(hub.last_seen_at).isoformat() if hub.last_seen_at else None,
                         "adapter_count": len((hub.metadata_json or {}).get("adapters", [])),
                         "instance_count": int(counts.get(hub.id, 0)),
+                        "runtime_types": sorted(
+                            str(item.get("runtime_type"))
+                            for item in (hub.metadata_json or {}).get("adapters", [])
+                            if isinstance(item, dict) and item.get("runtime_type")
+                        ),
                     }
                     for hub in hubs
                 ]
         except SQLAlchemyError as exc:
             raise RuntimeError("Hub catalog storage is unavailable") from exc
+
+    def select_placement_hub(self, runtime_type: str, requested_hub_id: str | None = None) -> str:
+        """Choose the Hub a new instance is placed on.
+
+        An explicit `requested_hub_id` must be online and must have reported the
+        runtime adapter. Without one, exactly one eligible Hub is required: when
+        several qualify the caller must choose, because silently picking one
+        would place work on an arbitrary machine.
+
+        Raises HubUnavailableError when a candidate machine is merely offline
+        (transient, retryable) and HubConflictError when the request itself
+        cannot be satisfied (unknown hub, no adapter, ambiguous choice).
+        """
+        try:
+            with self.sessions() as session:
+                hubs = session.scalars(select(MachineHub).order_by(MachineHub.id.asc())).all()
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Hub catalog storage is unavailable") from exc
+        online = [
+            hub
+            for hub in hubs
+            if hub.status == "online"
+            and hub.last_seen_at is not None
+            and (datetime.now(UTC) - _utc(hub.last_seen_at)).total_seconds() <= 90
+        ]
+        if requested_hub_id:
+            for hub in online:
+                if hub.id != requested_hub_id:
+                    continue
+                adapters = (hub.metadata_json or {}).get("adapters", [])
+                if not any(
+                    isinstance(item, dict) and item.get("runtime_type") == runtime_type for item in adapters
+                ):
+                    raise HubConflictError(f"Hub '{requested_hub_id}' has not reported the '{runtime_type}' Runtime Adapter")
+                return hub.id
+            known = next((hub for hub in hubs if hub.id == requested_hub_id), None)
+            if known is None:
+                raise HubConflictError(f"Hub '{requested_hub_id}' is not registered")
+            raise HubUnavailableError(f"Hub '{requested_hub_id}' is offline")
+        eligible = [
+            hub.id
+            for hub in online
+            if any(
+                isinstance(item, dict) and item.get("runtime_type") == runtime_type
+                for item in (hub.metadata_json or {}).get("adapters", [])
+            )
+        ]
+        if not eligible:
+            # Nothing can host this runtime right now. Whether a Hub is merely offline or
+            # was never registered, the caller's remedy is the same: bring a machine online.
+            raise HubUnavailableError("Machine Hub is offline")
+        if len(eligible) > 1:
+            raise HubConflictError(
+                f"several Hubs can run '{runtime_type}'; choose a target hub: {', '.join(eligible)}"
+            )
+        return eligible[0]
 
     def is_online(self, hub_id: str, offline_after_seconds: int = 90) -> bool:
         now = datetime.now(UTC)

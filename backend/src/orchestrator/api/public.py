@@ -394,6 +394,7 @@ async def public_create_runtime_instance(
                 schedule=payload.schedule,
             ),
             session,
+            target_hub_id=payload.target_hub_id,
         )
         return catalog_view(hub_service, instance.id)
     if payload.runtime_type in CLI_RUNTIME_TYPES:
@@ -422,21 +423,20 @@ async def create_cli_task_instance_via_hub(
     payload: RuntimeInstanceCreateRequest,
     session: AuthSessionView,
 ) -> str:
-    """Create a scheduled Codex / Claude Code task on the configured Hub; returns the catalog instance id."""
-    if not settings.hub_id or not settings.database_url:
+    """Create a scheduled Codex / Claude Code task on the target Hub; returns the catalog instance id."""
+    if not settings.database_url:
         raise HTTPException(status_code=503, detail="Machine Hub is not configured for this Backend")
     assert payload.task is not None and payload.schedule is not None
     hub_service = MachineHubService(settings.database_url)
     try:
-        if not hub_service.is_online(settings.hub_id):
-            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        target_hub_id = hub_service.select_placement_hub(payload.runtime_type, payload.target_hub_id)
         encrypted_secret = None
         if payload.task.model_api_key:
-            hub_encryption_key = settings.parsed_hub_command_encryption_keys.get(settings.hub_id)
+            hub_encryption_key = settings.parsed_hub_command_encryption_keys.get(target_hub_id)
             if not hub_encryption_key:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"HUB_COMMAND_ENCRYPTION_KEYS has no key for Hub '{settings.hub_id}'",
+                    detail=f"HUB_COMMAND_ENCRYPTION_KEYS has no key for Hub '{target_hub_id}'",
                 )
             try:
                 cipher = Fernet(hub_encryption_key.encode("ascii"))
@@ -465,12 +465,12 @@ async def create_cli_task_instance_via_hub(
             ),
         )
         receipt = hub_service.issue_command(
-            settings.hub_id,
+            target_hub_id,
             command_request,
             actor=f"wallet:{session.wallet_id}",
             catalog_owner_id=session.wallet_id,
         )
-        await _await_hub_command(hub_service, settings.hub_id, str(receipt.command_id), "create")
+        await _await_hub_command(hub_service, target_hub_id, str(receipt.command_id), "create")
         return instance_id
     except HTTPException:
         raise
@@ -488,21 +488,21 @@ async def create_openclaw_instance_via_hub(
     settings: Settings,
     payload: BotInstanceCreateRequest,
     session: AuthSessionView,
+    target_hub_id: str | None = None,
 ) -> BotInstanceView:
     service = openclaw_runtime_service(settings)
-    if not settings.hub_id or not settings.database_url:
+    if not settings.database_url:
         raise HTTPException(status_code=503, detail="Machine Hub is not configured for this Backend")
     try:
         hub_service = MachineHubService(settings.database_url)
-        if not hub_service.is_online(settings.hub_id):
-            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        hub_id = hub_service.select_placement_hub("openclaw", target_hub_id)
         encrypted_secret = None
         if payload.dingtalk_client_secret:
-            hub_encryption_key = settings.parsed_hub_command_encryption_keys.get(settings.hub_id)
+            hub_encryption_key = settings.parsed_hub_command_encryption_keys.get(hub_id)
             if not hub_encryption_key:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"HUB_COMMAND_ENCRYPTION_KEYS has no key for Hub '{settings.hub_id}'",
+                    detail=f"HUB_COMMAND_ENCRYPTION_KEYS has no key for Hub '{hub_id}'",
                 )
             try:
                 cipher = Fernet(hub_encryption_key.encode("ascii"))
@@ -534,14 +534,14 @@ async def create_openclaw_instance_via_hub(
             ),
         )
         receipt = hub_service.issue_command(
-            settings.hub_id,
+            hub_id,
             command_request,
             actor=f"wallet:{session.wallet_id}",
             catalog_owner_id=session.wallet_id,
         )
         deadline = asyncio.get_running_loop().time() + 30
         while asyncio.get_running_loop().time() < deadline:
-            command = hub_service.command_status(settings.hub_id, str(receipt.command_id))
+            command = hub_service.command_status(hub_id, str(receipt.command_id))
             if command is None:
                 raise HTTPException(status_code=502, detail="Hub create command disappeared before completion")
             if command["status"] == "succeeded":

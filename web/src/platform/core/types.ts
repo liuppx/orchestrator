@@ -133,6 +133,8 @@ export type RuntimeProvider = {
   management_mode: string
   availability: string
   capabilities: string[]
+  /** Hubs that reported this runtime adapter and can therefore host it. */
+  hub_ids: string[]
 }
 
 export type RuntimeProviderListResponse = {
@@ -187,6 +189,8 @@ export type CliTaskSpec = {
 export type RuntimeInstanceCreateRequest = BotInstanceCreateRequest & {
   runtime_type: string
   task?: CliTaskSpec | null
+  /** Target machine; required when several Hubs can run this runtime. */
+  target_hub_id?: string | null
 }
 
 export type InstanceSchedule = {
@@ -240,6 +244,7 @@ export type RuntimeHub = {
   last_seen_at: string | null
   adapter_count: number
   instance_count: number
+  runtime_types: string[]
 }
 
 export type RuntimeHubListResponse = {

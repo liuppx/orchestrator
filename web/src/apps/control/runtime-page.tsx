@@ -133,7 +133,7 @@ export function RuntimePage() {
         {hubsQuery.data?.items.map((hub) => (
           <div className="hub-row" key={hub.id}>
             <span className={`hub-state-mark hub-state-${hub.status}`} aria-hidden="true" />
-            <div className="hub-row-copy"><strong>{hub.id}</strong><span>{hub.adapter_count} 个 Adapter · {hub.instance_count} 个实例</span></div>
+            <div className="hub-row-copy"><strong>{hub.id}</strong><span>{hub.adapter_count} 个 Adapter · {hub.instance_count} 个实例{hub.runtime_types.length ? ` · ${hub.runtime_types.map(runtimeLabel).join(' / ')}` : ''}</span></div>
             <span className={`hub-state-label hub-state-label-${hub.status}`}>{hubStateLabel(hub.status)}</span>
             <span className="hub-seen">{hub.last_seen_at ? new Date(hub.last_seen_at).toLocaleTimeString() : '未上报'}</span>
           </div>

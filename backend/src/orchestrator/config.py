@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     internal_token: str = Field(default="change-me-internal-token", alias="HUB_INTERNAL_TOKEN")
     worker_token: str = Field(default="", alias="HUB_WORKER_TOKEN")
     worker_api_url: str = Field(default="http://127.0.0.1:3900", alias="HUB_WORKER_API_URL")
+    worker_target_hub_id: str = Field(default="", alias="HUB_WORKER_TARGET_HUB_ID")
     worker_id: str = Field(default="", alias="HUB_WORKER_ID")
     worker_lease_seconds: int = Field(default=300, alias="HUB_WORKER_LEASE_SECONDS")
     worker_max_attempts: int = Field(default=5, alias="HUB_WORKER_MAX_ATTEMPTS")

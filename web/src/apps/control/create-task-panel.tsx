@@ -6,7 +6,7 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { useRuntimeInstanceCreate } from '../../platform/agents/mutations'
-import { useRuntimeProviders } from '../../platform/agents/queries'
+import { useRuntimeHubs, useRuntimeProviders } from '../../platform/agents/queries'
 import type { CliRuntimeType, CliTaskSpec, InstanceSchedule } from '../../platform/core/types'
 
 type TaskForm = {
@@ -16,6 +16,7 @@ type TaskForm = {
   policy: string
   model: string
   model_api_key: string
+  target_hub_id: string
   schedule_kind: 'cron' | 'interval'
   schedule_expr: string
   schedule_minutes: string
@@ -59,10 +60,12 @@ function buildTask(values: TaskForm): CliTaskSpec {
 
 export function CreateTaskPanel() {
   const providers = useRuntimeProviders()
+  const hubs = useRuntimeHubs()
   const create = useRuntimeInstanceCreate()
   const available = (providers.data?.items ?? []).filter(
     (item): item is typeof item & { id: CliRuntimeType } => (item.id === 'codex' || item.id === 'claude-code') && item.availability === 'configured',
   )
+  const onlineHubs = (hubs.data?.items ?? []).filter((hub) => hub.status === 'online')
   const form = useForm<TaskForm>({
     defaultValues: {
       runtime_type: 'codex',
@@ -71,6 +74,7 @@ export function CreateTaskPanel() {
       policy: 'read-only',
       model: '',
       model_api_key: '',
+      target_hub_id: '',
       schedule_kind: 'cron',
       schedule_expr: '0 9 * * 1-5',
       schedule_minutes: '60',
@@ -81,12 +85,21 @@ export function CreateTaskPanel() {
   const runtime = form.watch('runtime_type')
   const scheduleKind = form.watch('schedule_kind')
   const policies = POLICIES[runtime]
+  const hostHubs = onlineHubs.filter((hub) => hub.runtime_types.includes(runtime))
   useEffect(() => {
     // Policies are runtime-specific; fall back to that runtime's safe default when switching.
     if (!policies.some((item) => item.value === form.getValues('policy'))) {
       form.setValue('policy', policies[0].value)
     }
   }, [form, policies])
+  useEffect(() => {
+    // A target is only needed when several machines can run this runtime.
+    if (hostHubs.length === 1) {
+      form.setValue('target_hub_id', hostHubs[0].id)
+    } else if (!hostHubs.some((hub) => hub.id === form.getValues('target_hub_id'))) {
+      form.setValue('target_hub_id', '')
+    }
+  }, [form, hostHubs])
 
   async function onSubmit(values: TaskForm) {
     await create.mutateAsync({
@@ -97,6 +110,7 @@ export function CreateTaskPanel() {
       deployment_mode: 'scheduled',
       schedule: buildSchedule(values),
       task: buildTask(values),
+      target_hub_id: values.target_hub_id || null,
     })
     form.reset({ ...values, name: '', prompt: '' })
   }
@@ -123,6 +137,15 @@ export function CreateTaskPanel() {
               <Select id="task-runtime" {...form.register('runtime_type')}>
                 {available.map((item) => (
                   <option key={item.id} value={item.id}>{RUNTIME_LABELS[item.id]}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <label htmlFor="task-target-hub" className="text-sm font-medium text-slate-700">目标机器</label>
+              <Select id="task-target-hub" {...form.register('target_hub_id', { required: hostHubs.length > 1 })}>
+                <option value="">{hostHubs.length > 1 ? '请选择一台机器' : '自动选择'}</option>
+                {hostHubs.map((hub) => (
+                  <option key={hub.id} value={hub.id}>{hub.id}</option>
                 ))}
               </Select>
             </div>

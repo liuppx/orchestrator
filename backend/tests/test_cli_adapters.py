@@ -78,6 +78,7 @@ FAKE_CLAUDE = textwrap.dedent(
 
 
 def _write_executable(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path

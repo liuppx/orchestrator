@@ -416,6 +416,8 @@ class InternalRuntimeInstanceCreate(BaseModel):
     runtime_type: RuntimeType
     instance_id: InstanceId
     create_payload: HubCreatePayloadV1
+    # Target machine; when several Hubs can run this runtime it must be set.
+    target_hub_id: str | None = None
 
 
 @router.post("/runtime/instances")
@@ -424,7 +426,7 @@ async def internal_create_runtime_instance(
     authorization: str | None = Header(default=None),
     x_worker_id: str | None = Header(default=None),
 ) -> dict:
-    """Create a catalog instance on the configured Hub for the lifecycle worker.
+    """Create a catalog instance on a Hub for the lifecycle worker.
 
     Idempotent on instance_id: a retried task finds the existing instance and does
     not issue a second create command.
@@ -433,8 +435,8 @@ async def internal_create_runtime_instance(
 
     settings = Settings()
     require_worker_token(settings, authorization)
-    if not settings.hub_id or not settings.database_url:
-        raise HTTPException(status_code=503, detail="Machine Hub is not configured for this Backend")
+    if not settings.database_url:
+        raise HTTPException(status_code=503, detail="Machine Hub catalog is not configured for this Backend")
     try:
         body = InternalRuntimeInstanceCreate.model_validate(await request_payload(request))
     except ValidationError as exc:
@@ -446,8 +448,7 @@ async def internal_create_runtime_instance(
             if existing.get("owner_id") != body.owner_id or existing.get("runtime_type") != body.runtime_type:
                 raise HTTPException(status_code=409, detail="instance id belongs to another owner or runtime")
             return ok({"instance": existing, "created": False})
-        if not hub_service.is_online(settings.hub_id):
-            raise HTTPException(status_code=503, detail="Machine Hub is offline")
+        hub_id = hub_service.select_placement_hub(body.runtime_type, body.target_hub_id)
         command = HubCommandIssueRequestV1(
             target_instance_id=body.instance_id,
             runtime_type=body.runtime_type,
@@ -459,7 +460,7 @@ async def internal_create_runtime_instance(
             create_payload=body.create_payload,
         )
         receipt = hub_service.issue_command(
-            settings.hub_id,
+            hub_id,
             command,
             actor=f"worker:{str(x_worker_id or '').strip() or 'unknown'}",
             catalog_owner_id=body.owner_id,
@@ -470,14 +471,14 @@ async def internal_create_runtime_instance(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    await _await_hub_command(hub_service, settings.hub_id, str(receipt.command_id), "create")
+    await _await_hub_command(hub_service, hub_id, str(receipt.command_id), "create")
     try:
         created = hub_service.catalog_instance(body.instance_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if created is None:
         raise HTTPException(status_code=502, detail="Hub created the instance but the catalog has no record of it")
-    return ok({"instance": created, "created": True})
+    return ok({"instance": created, "created": True, "hub_id": hub_id})
 
 
 @router.post("/runtime/instances/{instance_id}/delete")

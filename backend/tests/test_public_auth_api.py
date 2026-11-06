@@ -44,7 +44,9 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-class PublicAuthApiTest(unittest.TestCase):
+class PublicApiHarness(unittest.TestCase):
+    """Server/login/request helpers shared by API test modules. Holds no tests itself."""
+
     def setUp(self) -> None:
         self.tmpdir = None
         self.repo_root = None
@@ -243,6 +245,8 @@ class PublicAuthApiTest(unittest.TestCase):
         (trader_root / "config" / "trader.env").write_text("TRADER_BROKER=eastmoney_stub\n", encoding="utf-8")
         return trader_root
 
+
+class PublicAuthApiTest(PublicApiHarness):
     def test_auth_gate_login_and_logout(self) -> None:
         self.start_server("never")
         status, _, _ = self.request("/api/v1/public/agents")

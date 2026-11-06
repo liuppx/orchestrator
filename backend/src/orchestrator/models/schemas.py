@@ -269,6 +269,8 @@ class RuntimeProviderView(BaseModel):
     management_mode: str
     availability: str
     capabilities: list[str]
+    # Hubs that reported this runtime adapter and can therefore host it.
+    hub_ids: list[str] = []
 
 
 class RuntimeProviderListResponse(BaseModel):
@@ -329,6 +331,7 @@ class RuntimeHubView(BaseModel):
     last_seen_at: str | None
     adapter_count: int
     instance_count: int
+    runtime_types: list[str] = []
 
 
 class RuntimeInstanceListResponse(BaseModel):
@@ -356,6 +359,8 @@ class RuntimeInstanceActionResponse(BaseModel):
 class RuntimeInstanceCreateRequest(BotInstanceCreateRequest):
     runtime_type: str = "openclaw"
     task: CliTaskSpec | None = None
+    # Target machine for placement; when several Hubs can run this runtime it must be set.
+    target_hub_id: str | None = None
 
     @model_validator(mode="after")
     def validate_runtime_shape(self) -> "RuntimeInstanceCreateRequest":
