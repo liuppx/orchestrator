@@ -127,10 +127,6 @@ class Settings(BaseSettings):
         return self.hub_openclaw_secret_store_dir or (self.resolved_hub_client_dir / "openclaw-secrets")
 
     @property
-    def ui_dir(self) -> Path:
-        return self.repo_root / "web" / "dist"
-
-    @property
     def parsed_model_allowlist(self) -> list[str]:
         return [item.strip() for item in self.model_allowlist.split(",") if item.strip()]
 

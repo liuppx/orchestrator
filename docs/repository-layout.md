@@ -53,7 +53,7 @@ organized for a future split into agent-specific sites:
   UCAN-adjacent session wiring, API clients, shared types, and query setup.
 - `web/src/apps/`: agent-facing application modules. Each agent app
   should keep its own screens and business UI here.
-- `web/dist/`: built web UI artifacts served by the Python backend.
+- `web/dist/`: built static web UI artifact, deployed independently from the Python service.
   This directory is runtime/package output and should not be committed as source.
 
 Current rule of thumb:

@@ -121,7 +121,20 @@ bash scripts/doctor_full_stack.sh
 bash scripts/package.sh
 ```
 
-安装包输出到 `output/`。打包脚本从当前 `origin/main` 构建，包含 `backend/`、`web/`、`agents/` 和 `scripts/`，不包含运行中的 `runtime/` 状态。部署到目标机后，按上文创建 `backend/.env`、安装依赖并构建前端，再用 `scripts/starter.sh` 启动服务。
+安装包输出到 `output/`，manifest 中分别包含 `orchestrator` service 和 `orchestrator-web` static artifact。服务包包含 `backend/`、`agents/` 和 `scripts/`，静态包只包含 `web/dist/`；运行中的 `runtime/` 状态不会进入制品。两种制品可分别升级和回滚。生产 Nginx 将 `/opt/deploy/static/orchestrator-web/current` 作为站点 root，并仅把 `/api/` 代理到 Orchestrator 服务端口。部署前先迁移并验证 Nginx 配置，再启用 `static-units.conf` 对应静态单元。
+
+```nginx
+server {
+    root /opt/deploy/static/orchestrator-web/current;
+    location ^~ /api/ {
+        proxy_pass http://127.0.0.1:3900;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location / { try_files $uri $uri/ /index.html; }
+}
+```
 
 ## 目录用途
 

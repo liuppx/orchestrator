@@ -62,13 +62,6 @@ grep -Eq '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$version_body" || {
   exit 1
 }
 
-index_body="$tmp_dir/index.html"
-curl --disable --silent --show-error --fail --max-time "$timeout" "$base_url/" -o "$index_body"
-grep -Eqi '<html([[:space:]>])' "$index_body" || {
-  printf 'Web console root did not return an HTML document\n' >&2
-  exit 1
-}
-
 auth_status="$(curl --disable --silent --show-error --max-time "$timeout" \
   -o "$tmp_dir/auth-me.json" -w '%{http_code}' "$base_url/api/v1/public/auth/me")"
 [[ "$auth_status" == 401 ]] || {
@@ -76,4 +69,4 @@ auth_status="$(curl --disable --silent --show-error --max-time "$timeout" \
   exit 1
 }
 
-printf 'orchestrator suite=smoke status=pass checks=readiness,version,web-console,auth-boundary\n'
+printf 'orchestrator suite=smoke status=pass checks=readiness,version,auth-boundary\n'

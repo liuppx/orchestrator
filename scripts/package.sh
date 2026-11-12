@@ -10,8 +10,16 @@ for command_name in npm uv; do command -v "$command_name" >/dev/null 2>&1 || pac
 [[ -f "$PACKAGE_ROOT_DIR/web/dist/index.html" ]] || package_fail 'web build output is missing'
 package_make_root orchestrator
 for directory in backend agents; do [[ ! -d "$PACKAGE_ROOT_DIR/$directory" ]] || cp -R "$PACKAGE_ROOT_DIR/$directory" "$PACKAGE_DIR/$directory"; done
-mkdir -p "$PACKAGE_DIR/web"
-cp -R "$PACKAGE_ROOT_DIR/web/dist" "$PACKAGE_DIR/web/dist"
+if [[ -d "$PACKAGE_DIR/agents" ]]; then
+  find "$PACKAGE_DIR/agents" -type d \( -name .venv -o -name node_modules -o -name __pycache__ \) -prune -exec rm -rf {} +
+fi
+venv_python="$PACKAGE_DIR/backend/.venv/bin/python"
+if [[ -L "$venv_python" ]]; then
+  resolved_python="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$venv_python")"
+  [[ -x "$resolved_python" ]] || package_fail "virtualenv interpreter target is missing: $resolved_python"
+  cp -p "$resolved_python" "$venv_python.tmp"
+  mv "$venv_python.tmp" "$venv_python"
+fi
 if [[ -d "$PACKAGE_ROOT_DIR/tests/smoke" ]]; then
   mkdir -p "$PACKAGE_DIR/tests"
   cp -R "$PACKAGE_ROOT_DIR/tests/smoke" "$PACKAGE_DIR/tests/smoke"
@@ -21,5 +29,10 @@ for file in .env.template backend/.env.template; do
 done
 package_copy_scripts "$PACKAGE_DIR/scripts"
 package_strip_build_files "$PACKAGE_DIR"
-package_finish_artifact service-with-assets
+package_finish_artifact service
+
+package_make_root orchestrator-web
+PACKAGE_HEALTH_PATH=/index.html
+cp -R "$PACKAGE_ROOT_DIR/web/dist/." "$PACKAGE_DIR/"
+package_finish_artifact static
 package_finish
