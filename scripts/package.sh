@@ -8,7 +8,7 @@ for command_name in npm uv; do command -v "$command_name" >/dev/null 2>&1 || pac
 (cd "$PACKAGE_ROOT_DIR/web" && npm install --no-audit --no-fund && npm run build)
 (cd "$PACKAGE_ROOT_DIR/backend" && uv sync --locked --no-dev)
 [[ -f "$PACKAGE_ROOT_DIR/web/dist/index.html" ]] || package_fail 'web build output is missing'
-package_make_root orchestrator
+package_make_root orchestrator-service
 for directory in backend agents; do [[ ! -d "$PACKAGE_ROOT_DIR/$directory" ]] || cp -R "$PACKAGE_ROOT_DIR/$directory" "$PACKAGE_DIR/$directory"; done
 if [[ -d "$PACKAGE_DIR/agents" ]]; then
   find "$PACKAGE_DIR/agents" -type d \( -name .venv -o -name node_modules -o -name __pycache__ \) -prune -exec rm -rf {} +
@@ -29,7 +29,7 @@ for file in .env.template backend/.env.template; do
 done
 package_copy_scripts "$PACKAGE_DIR/scripts"
 package_strip_build_files "$PACKAGE_DIR"
-package_finish_artifact service
+package_finish_artifact service orchestrator
 
 package_make_root orchestrator-web
 PACKAGE_HEALTH_PATH=/index.html
